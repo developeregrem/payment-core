@@ -1,0 +1,41 @@
+{
+    "name": "fewohbee/payment-core",
+    "description": "Provider-agnostic payment module with a Payactive adapter. Extracted from the fewohbee application so it can be reused (e.g. by the FewohBee Platform Portal).",
+    "type": "library",
+    "license": "proprietary",
+    "minimum-stability": "stable",
+    "prefer-stable": true,
+    "require": {
+        "php": ">=8.2",
+        "psr/log": "^3.0",
+        "doctrine/orm": "^3.0",
+        "doctrine/dbal": "^4.0",
+        "doctrine/persistence": "^3.0 || ^4.0",
+        "doctrine/doctrine-bundle": "^2.0 || ^3.0",
+        "symfony/config": "^7.0 || ^8.0",
+        "symfony/console": "^7.0 || ^8.0",
+        "symfony/dependency-injection": "^7.0 || ^8.0",
+        "symfony/event-dispatcher": "^7.0 || ^8.0",
+        "symfony/http-client": "^7.0 || ^8.0",
+        "symfony/http-foundation": "^7.0 || ^8.0",
+        "symfony/http-kernel": "^7.0 || ^8.0"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^11.0",
+        "symfony/framework-bundle": "^7.0 || ^8.0",
+        "symfony/yaml": "^7.0 || ^8.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Fewohbee\\PaymentCore\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Fewohbee\\PaymentCore\\Tests\\": "tests/"
+        }
+    },
+    "config": {
+        "sort-packages": true
+    }
+}

@@ -1,0 +1,57 @@
+# fewohbee/payment-core — reference DI wiring
+# -------------------------------------------------------------------
+# This is the canonical service wiring for the payment-core package.
+# It is NOT auto-loaded. Copy the relevant blocks into the consuming
+# application's config/services.yaml (the portal does this; fewohbee
+# will adopt it when it migrates off App\Payment\). Keeping it here
+# guarantees both apps wire the package identically.
+#
+# Requires these env vars in the consuming app:
+#   PAYMENT_PROVIDER          active provider id, e.g. "payactive"
+#   PAYACTIVE_API_KEY
+#   PAYACTIVE_API_BASE_URL    e.g. https://api.sandbox.payactive.app
+#   PAYACTIVE_WEBHOOK_SECRET
+#
+# The consuming app must also (a) register the package src as a service
+# namespace and (b) register the entity mapping — see README.md.
+
+services:
+    _defaults:
+        autowire: true
+        autoconfigure: true
+
+    # Make all package classes available as services.
+    Fewohbee\PaymentCore\:
+        resource: '%kernel.project_dir%/vendor/fewohbee/payment-core/src/'
+        exclude:
+            - '%kernel.project_dir%/vendor/fewohbee/payment-core/src/Dto/'
+            - '%kernel.project_dir%/vendor/fewohbee/payment-core/src/Enum/'
+            - '%kernel.project_dir%/vendor/fewohbee/payment-core/src/Event/'
+            - '%kernel.project_dir%/vendor/fewohbee/payment-core/src/Entity/'
+            - '%kernel.project_dir%/vendor/fewohbee/payment-core/src/Exception/'
+
+    # Tag every provider / webhook handler implementation so the
+    # registries can collect them via !tagged_iterator.
+    _instanceof:
+        Fewohbee\PaymentCore\Provider\PaymentProviderInterface:
+            tags: ['app.payment.provider']
+        Fewohbee\PaymentCore\Webhook\WebhookHandlerInterface:
+            tags: ['app.payment.webhook_handler']
+
+    Fewohbee\PaymentCore\Provider\PaymentProviderRegistry:
+        arguments:
+            $providers: !tagged_iterator app.payment.provider
+            $activeProviderId: '%env(PAYMENT_PROVIDER)%'
+
+    Fewohbee\PaymentCore\Webhook\WebhookHandlerRegistry:
+        arguments:
+            $handlers: !tagged_iterator app.payment.webhook_handler
+
+    Fewohbee\PaymentCore\Adapter\Payactive\PayactiveClient:
+        arguments:
+            $apiKey: '%env(PAYACTIVE_API_KEY)%'
+            $baseUrl: '%env(PAYACTIVE_API_BASE_URL)%'
+
+    Fewohbee\PaymentCore\Adapter\Payactive\PayactiveWebhookHandler:
+        arguments:
+            $signingSecret: '%env(PAYACTIVE_WEBHOOK_SECRET)%'

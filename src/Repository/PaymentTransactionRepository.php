@@ -1,0 +1,47 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Fewohbee\PaymentCore\Repository;
+
+use Fewohbee\PaymentCore\Entity\PaymentTransaction;
+use Fewohbee\PaymentCore\Enum\PaymentStatus;
+use Doctrine\Bundle\DoctrineBundle\Repository\ServiceEntityRepository;
+use Doctrine\Persistence\ManagerRegistry;
+
+/**
+ * @extends ServiceEntityRepository<PaymentTransaction>
+ */
+class PaymentTransactionRepository extends ServiceEntityRepository
+{
+    public function __construct(ManagerRegistry $registry)
+    {
+        parent::__construct($registry, PaymentTransaction::class);
+    }
+
+    public function findOneByProviderAndProviderPaymentId(string $providerId, string $providerPaymentId): ?PaymentTransaction
+    {
+        return $this->findOneBy([
+            'providerId' => $providerId,
+            'providerPaymentId' => $providerPaymentId,
+        ]);
+    }
+
+    /** @return PaymentTransaction[] */
+    public function findByExternalReference(string $externalReference): array
+    {
+        return $this->findBy(['externalReference' => $externalReference], ['createdAt' => 'ASC']);
+    }
+
+    /** @return PaymentTransaction[] */
+    public function findPending(int $limit = 200): array
+    {
+        return $this->createQueryBuilder('p')
+            ->where('p.status IN (:statuses)')
+            ->setParameter('statuses', [PaymentStatus::PENDING, PaymentStatus::INITIATED])
+            ->orderBy('p.updatedAt', 'ASC')
+            ->setMaxResults($limit)
+            ->getQuery()
+            ->getResult();
+    }
+}
