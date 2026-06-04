@@ -125,8 +125,13 @@ class PayactiveProvider implements PaymentProviderInterface
     private function mapState(string $state): PaymentStatus
     {
         return match ($state) {
-            'CREATING', 'PENDING', 'MANUAL' => PaymentStatus::INITIATED,
-            'COMPLETED', 'VERIFIED' => PaymentStatus::SETTLED,
+            // COMPLETED = the customer finished the (online) payment, but it is
+            // not yet matched/verified on the account → NOT settled yet. Only
+            // VERIFIED is a real settlement (this is also exactly when Payactive
+            // fires the payment.settled webhook). Keeps polling consistent with
+            // the webhook semantics.
+            'CREATING', 'PENDING', 'MANUAL', 'COMPLETED' => PaymentStatus::INITIATED,
+            'VERIFIED' => PaymentStatus::SETTLED,
             'ABORTED', 'ERROR' => PaymentStatus::FAILED,
             'CANCELLED' => PaymentStatus::CANCELLED,
             'REFUND_IN_PROGRESS', 'REFUND_COMPLETED' => PaymentStatus::REFUNDED,
