@@ -252,6 +252,11 @@ class PayactiveClient
         }
 
         try {
+            // A successful PUT/PATCH/DELETE may return an empty body (204/200) —
+            // not an error, just nothing to decode.
+            if ('' === trim($response->getContent(false))) {
+                return [];
+            }
             $data = $response->toArray(false);
         } catch (ExceptionInterface $e) {
             throw new PaymentProviderException(sprintf('Payactive: invalid JSON on %s %s: %s', $method, $path, $e->getMessage()), 0, $e);
