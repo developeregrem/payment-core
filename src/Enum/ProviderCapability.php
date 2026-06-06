@@ -10,4 +10,5 @@ enum ProviderCapability: string
     case DIRECT_DEBIT = 'direct_debit';
     case CARD_PREAUTH = 'card_preauth';
     case REFUND = 'refund';
+    case INVOICE = 'invoice';
 }

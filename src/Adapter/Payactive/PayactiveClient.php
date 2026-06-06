@@ -147,6 +147,63 @@ class PayactiveClient
     }
 
     /**
+     * Update a customer (e.g. to backfill address / vatId before invoicing).
+     *
+     * @param array<string, mixed> $payload
+     */
+    public function updateCustomer(string $customerId, array $payload): void
+    {
+        $this->requestJson('PUT', '/customers/'.rawurlencode($customerId), $payload);
+    }
+
+    /**
+     * Create an invoice (DRAFT). Returns the full invoice response.
+     *
+     * @param array<string, mixed> $payload
+     *
+     * @return array<string, mixed>
+     */
+    public function createInvoice(array $payload): array
+    {
+        $data = $this->requestJson('POST', '/invoices', $payload);
+        if (!isset($data['id']) || !is_string($data['id']) || '' === $data['id']) {
+            throw new PaymentProviderException('Payactive: createInvoice response missing "id".');
+        }
+
+        return $data;
+    }
+
+    /**
+     * Finalize an invoice (DRAFT → OPEN); returns the finalized invoice
+     * (with invoiceNumber + paymentId).
+     *
+     * @return array<string, mixed>
+     */
+    public function finalizeInvoice(string $invoiceId): array
+    {
+        return $this->requestJson('POST', '/invoices/'.rawurlencode($invoiceId).'/actions/finalize');
+    }
+
+    /** @return array<string, mixed> */
+    public function getInvoice(string $invoiceId): array
+    {
+        return $this->requestJson('GET', '/invoices/'.rawurlencode($invoiceId));
+    }
+
+    /**
+     * Download a finalized invoice document. Returns raw bytes + content type.
+     *
+     * @return array{content: string, contentType: string}
+     */
+    public function exportInvoice(string $invoiceId, string $exportType = 'pdf'): array
+    {
+        return $this->requestBinary(
+            'GET',
+            '/invoices/'.rawurlencode($invoiceId).'/actions/export/'.rawurlencode($exportType)
+        );
+    }
+
+    /**
      * @param array<string, mixed>|null $body
      *
      * @return array<string, mixed>
@@ -198,6 +255,36 @@ class PayactiveClient
         }
 
         return $data;
+    }
+
+    /**
+     * Binary GET (e.g. invoice PDF export). Same auth/error handling as
+     * requestJson but returns the raw body + content type.
+     *
+     * @return array{content: string, contentType: string}
+     */
+    private function requestBinary(string $method, string $path): array
+    {
+        if ('' === $this->apiKey) {
+            throw new PaymentProviderException('Payactive: PAYACTIVE_API_KEY is not configured.');
+        }
+
+        try {
+            $response = $this->httpClient->request($method, rtrim($this->baseUrl, '/').$path, [
+                'headers' => ['api_key' => $this->apiKey, 'Accept' => 'application/pdf'],
+                'timeout' => self::DEFAULT_TIMEOUT,
+            ]);
+            $status = $response->getStatusCode();
+            if ($status >= 400) {
+                throw new PaymentProviderException(sprintf('Payactive: HTTP %d on %s %s.', $status, $method, $path));
+            }
+            $content = $response->getContent();
+            $contentType = $response->getHeaders()['content-type'][0] ?? 'application/octet-stream';
+        } catch (ExceptionInterface $e) {
+            throw new PaymentProviderException(sprintf('Payactive: transport error on %s %s: %s', $method, $path, $e->getMessage()), 0, $e);
+        }
+
+        return ['content' => $content, 'contentType' => $contentType];
     }
 
     private function safeBody(ResponseInterface $response): string

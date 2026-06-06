@@ -4,40 +4,48 @@ declare(strict_types=1);
 
 namespace Fewohbee\PaymentCore\Adapter\Payactive;
 
+use Fewohbee\PaymentCore\Dto\CreateInvoiceRequest;
 use Fewohbee\PaymentCore\Dto\CreatePaymentRequest;
+use Fewohbee\PaymentCore\Dto\InvoiceDocument;
+use Fewohbee\PaymentCore\Dto\InvoiceInitiation;
+use Fewohbee\PaymentCore\Dto\InvoicePosition;
 use Fewohbee\PaymentCore\Dto\PaymentInitiation;
 use Fewohbee\PaymentCore\Dto\PaymentStatusSnapshot;
 use Fewohbee\PaymentCore\Enum\PaymentStatus;
 use Fewohbee\PaymentCore\Enum\ProviderCapability;
 use Fewohbee\PaymentCore\Exception\PaymentProviderException;
+use Fewohbee\PaymentCore\Provider\InvoiceProviderInterface;
 use Fewohbee\PaymentCore\Provider\PaymentProviderInterface;
 
 /**
  * Payactive adapter. Self-contained — depends only on the Core Payment module
  * and Symfony HTTP/Logger primitives. Extractable as a Composer package.
  *
- * Flow (per Payactive's canonical recipe):
+ * Payment flow (per Payactive's canonical recipe):
  *   1) POST /customers       → customerId
  *   2) POST /payments        → paymentId
  *   3) GET  /payments/{id}/payment-link → URL for the guest
  *   4) GET  /payments/{id}   → polled state for status sync
+ *
+ * Invoice flow (optional capability, e.g. for the portal):
+ *   1) ensure customer (with address + vatId, ZUGFeRD requires them)
+ *   2) POST /invoices                       → invoice (DRAFT)
+ *   3) POST /invoices/{id}/actions/finalize → invoiceNumber + paymentId (ZUGFeRD)
+ *   4) GET  /payments/{paymentId}/payment-link → pay-link
  */
-class PayactiveProvider implements PaymentProviderInterface
+class PayactiveProvider implements PaymentProviderInterface, InvoiceProviderInterface
 {
     public const ID = 'payactive';
 
     /**
-     * Payment methods we exclude even when the Payactive account has them
-     * enabled. Cards need a separate contract with a card acquirer per
-     * hotelier — out of scope for now.
+     * @param list<string> $paymentMethods Methods offered to the customer.
+     *   Default CUSTOMERS_CHOICE lets the payer pick among the account's enabled
+     *   methods (online transfer / direct debit / manual) — also for invoices.
      */
-    private const EXCLUDED_PAYMENT_METHODS = ['CREDIT_CARD'];
-
-    /** @var list<string>|null in-memory cache of available payment methods for this request */
-    private ?array $cachedPaymentMethods = null;
-
     public function __construct(
         private readonly PayactiveClient $client,
+        private readonly array $paymentMethods = ['CUSTOMERS_CHOICE'],
+        private readonly ?string $creditorBankAccountId = null,
     ) {
     }
 
@@ -50,6 +58,7 @@ class PayactiveProvider implements PaymentProviderInterface
     {
         return match ($capability) {
             ProviderCapability::ONLINE_PAYMENT => true,
+            ProviderCapability::INVOICE => null !== $this->creditorBankAccountId && '' !== $this->creditorBankAccountId,
             // DIRECT_DEBIT is technically supported by Payactive but requires the
             // SEPA mandate flow which is not implemented here yet.
             // CARD_PREAUTH is not visible in the Payactive sandbox UI — pending clarification.
@@ -66,7 +75,7 @@ class PayactiveProvider implements PaymentProviderInterface
                 'firstName' => $request->customerFirstName,
                 'lastName' => $request->customerLastName,
                 'type' => 'PERSON',
-                'paymentMethod' => 'ONLINE_PAYMENT',
+                'paymentMethod' => $this->customerPaymentMethod(),
                 'invitationType' => 'LINK',
                 'externalRef' => $request->externalReference,
             ]);
@@ -78,7 +87,7 @@ class PayactiveProvider implements PaymentProviderInterface
             'currency' => $request->currency,
             'purpose' => $request->purpose,
             'externalReference' => $request->externalReference,
-            'paymentMethod' => $this->resolvePaymentMethods(),
+            'paymentMethod' => $this->paymentMethods,
             'paymentNotifications' => 'EMAIL',
         ]);
 
@@ -90,24 +99,137 @@ class PayactiveProvider implements PaymentProviderInterface
         );
     }
 
-    /**
-     * Determine which payment methods to offer the guest. Pulls the live list
-     * from the Payactive account settings, drops the ones we explicitly
-     * exclude (cards), and falls back to ONLINE_PAYMENT if the API returned
-     * an unexpectedly empty list — guarantees the call always has at least
-     * one method.
-     *
-     * @return list<string>
-     */
-    private function resolvePaymentMethods(): array
+    public function createInvoice(CreateInvoiceRequest $request): InvoiceInitiation
     {
-        if (null === $this->cachedPaymentMethods) {
-            $available = $this->client->getAvailablePaymentMethods();
-            $filtered = array_values(array_diff($available, self::EXCLUDED_PAYMENT_METHODS));
-            $this->cachedPaymentMethods = [] === $filtered ? ['ONLINE_PAYMENT'] : $filtered;
+        if (null === $this->creditorBankAccountId || '' === $this->creditorBankAccountId) {
+            throw new PaymentProviderException('Payactive: creditor bank account id is not configured (PAYACTIVE_CREDITOR_BANK_ACCOUNT_ID).');
         }
 
-        return $this->cachedPaymentMethods;
+        $customerId = $this->ensureInvoiceCustomer($request);
+
+        $payload = [
+            'customerId' => $customerId,
+            'creditorBankAccountId' => $this->creditorBankAccountId,
+            'positions' => array_map($this->mapPosition(...), $request->positions),
+            'grossInvoice' => $request->grossInvoice,
+            'reverseCharge' => $request->reverseCharge,
+            'metadata' => $this->invoiceMetadata($request),
+        ];
+        if (null !== $request->defaultTaxRatePercent) {
+            $payload['defaultTaxRate'] = ['rate' => $request->defaultTaxRatePercent, 'description' => $request->taxExemptNote ?? ''];
+        }
+        if (null !== $request->paymentTermInDays) {
+            $payload['paymentTermInDays'] = $request->paymentTermInDays;
+        }
+        if (null !== $request->servicePeriodStart) {
+            $payload['servicePeriodStart'] = $request->servicePeriodStart->format('Y-m-d');
+        }
+        if (null !== $request->servicePeriodEnd) {
+            $payload['servicePeriodEnd'] = $request->servicePeriodEnd->format('Y-m-d');
+        }
+
+        $invoiceId = $this->client->createInvoice($payload)['id'];
+        $finalized = $this->client->finalizeInvoice($invoiceId);
+
+        $invoiceNumber = isset($finalized['invoiceNumber']) && is_string($finalized['invoiceNumber'])
+            ? $finalized['invoiceNumber'] : null;
+        $paymentId = isset($finalized['paymentId']) && is_string($finalized['paymentId'])
+            ? $finalized['paymentId'] : null;
+        $redirectUrl = null !== $paymentId ? $this->client->getPaymentLink($paymentId) : null;
+
+        return new InvoiceInitiation(
+            invoiceId: $invoiceId,
+            invoiceNumber: $invoiceNumber,
+            providerPaymentId: $paymentId,
+            redirectUrl: $redirectUrl,
+        );
+    }
+
+    public function downloadInvoice(string $invoiceId): InvoiceDocument
+    {
+        $doc = $this->client->exportInvoice($invoiceId);
+
+        return new InvoiceDocument(
+            filename: sprintf('invoice-%s.pdf', $invoiceId),
+            contentType: $doc['contentType'],
+            content: $doc['content'],
+        );
+    }
+
+    /**
+     * Ensure the Payactive customer exists with address + vatId (ZUGFeRD needs
+     * them). Creates a new customer, or updates an existing one to backfill the
+     * billing details.
+     */
+    private function ensureInvoiceCustomer(CreateInvoiceRequest $request): string
+    {
+        $customerPayload = [
+            'emailAddress' => $request->customerEmail,
+            'firstName' => $request->customerFirstName,
+            'lastName' => $request->customerLastName,
+            'type' => $request->customerType,
+            'paymentMethod' => $this->customerPaymentMethod(),
+            'invitationType' => 'LINK',
+            'externalRef' => $request->externalReference,
+            'companyName' => $request->companyName,
+            'vatId' => $request->vatId,
+            'address' => [
+                'line' => $request->address->line,
+                'zipCode' => $request->address->zipCode,
+                'city' => $request->address->city,
+                'country' => $request->address->country,
+            ],
+        ];
+        $customerPayload = array_filter($customerPayload, static fn ($v) => null !== $v);
+
+        $existingId = $this->client->findCustomerIdByEmail($request->customerEmail);
+        if (null !== $existingId) {
+            $this->client->updateCustomer($existingId, $customerPayload);
+
+            return $existingId;
+        }
+
+        return $this->client->createCustomer($customerPayload);
+    }
+
+    /** @return array<string, mixed> */
+    private function mapPosition(InvoicePosition $position): array
+    {
+        $mapped = [
+            'description' => $position->description,
+            'quantity' => $position->quantity,
+            'price' => $position->unitPrice,
+        ];
+        if (null !== $position->taxRatePercent) {
+            $mapped['taxRate'] = ['rate' => $position->taxRatePercent, 'description' => ''];
+        }
+
+        return $mapped;
+    }
+
+    /** @return array<int, array{key: string, value: string}> */
+    private function invoiceMetadata(CreateInvoiceRequest $request): array
+    {
+        $meta = [['key' => 'externalReference', 'value' => $request->externalReference]];
+        if (null !== $request->taxExemptNote) {
+            $meta[] = ['key' => 'taxExemptNote', 'value' => $request->taxExemptNote];
+        }
+
+        return $meta;
+    }
+
+    /**
+     * The single payment method stored on the customer. CUSTOMERS_CHOICE if the
+     * configured set allows the payer to choose, otherwise the single configured
+     * method.
+     */
+    private function customerPaymentMethod(): string
+    {
+        if (in_array('CUSTOMERS_CHOICE', $this->paymentMethods, true)) {
+            return 'CUSTOMERS_CHOICE';
+        }
+
+        return 1 === count($this->paymentMethods) ? $this->paymentMethods[0] : 'CUSTOMERS_CHOICE';
     }
 
     public function fetchPaymentStatus(string $providerPaymentId): PaymentStatusSnapshot

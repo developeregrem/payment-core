@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use Fewohbee\PaymentCore\Adapter\Payactive\PayactiveClient;
+use Fewohbee\PaymentCore\Adapter\Payactive\PayactiveProvider;
 use Fewohbee\PaymentCore\Adapter\Payactive\PayactiveWebhookHandler;
 use Fewohbee\PaymentCore\Provider\PaymentProviderInterface;
 use Fewohbee\PaymentCore\Provider\PaymentProviderRegistry;
@@ -51,6 +52,10 @@ return static function (Symfony\Component\DependencyInjection\Loader\Configurato
     $services->get(PayactiveClient::class)
         ->arg('$apiKey', param('payment_core.payactive.api_key'))
         ->arg('$baseUrl', param('payment_core.payactive.base_url'));
+
+    $services->get(PayactiveProvider::class)
+        ->arg('$paymentMethods', param('payment_core.payactive.payment_methods'))
+        ->arg('$creditorBankAccountId', param('payment_core.payactive.creditor_bank_account_id'));
 
     $services->get(PayactiveWebhookHandler::class)
         ->arg('$signingSecret', param('payment_core.payactive.webhook_secret'));

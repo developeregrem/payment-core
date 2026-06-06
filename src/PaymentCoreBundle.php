@@ -43,13 +43,22 @@ class PaymentCoreBundle extends AbstractBundle
                         ->scalarNode('api_key')->defaultValue('%env(PAYACTIVE_API_KEY)%')->end()
                         ->scalarNode('base_url')->defaultValue('%env(PAYACTIVE_API_BASE_URL)%')->end()
                         ->scalarNode('webhook_secret')->defaultValue('%env(PAYACTIVE_WEBHOOK_SECRET)%')->end()
+                        ->scalarNode('creditor_bank_account_id')
+                            ->defaultValue('%env(default::PAYACTIVE_CREDITOR_BANK_ACCOUNT_ID)%')
+                            ->info('Creditor bank account id used for invoices (no listing API; copy from the Payactive portal).')
+                        ->end()
+                        ->arrayNode('payment_methods')
+                            ->scalarPrototype()->end()
+                            ->defaultValue(['CUSTOMERS_CHOICE'])
+                            ->info('Payment methods offered to the payer. CUSTOMERS_CHOICE lets them pick among the account\'s enabled methods.')
+                        ->end()
                     ->end()
                 ->end()
             ->end();
     }
 
     /**
-     * @param array{active_provider: string, payactive: array{api_key: string, base_url: string, webhook_secret: string}} $config
+     * @param array{active_provider: string, payactive: array{api_key: string, base_url: string, webhook_secret: string, creditor_bank_account_id: ?string, payment_methods: list<string>}} $config
      */
     public function loadExtension(array $config, ContainerConfigurator $container, ContainerBuilder $builder): void
     {
@@ -57,7 +66,9 @@ class PaymentCoreBundle extends AbstractBundle
             ->set('payment_core.active_provider', $config['active_provider'])
             ->set('payment_core.payactive.api_key', $config['payactive']['api_key'])
             ->set('payment_core.payactive.base_url', $config['payactive']['base_url'])
-            ->set('payment_core.payactive.webhook_secret', $config['payactive']['webhook_secret']);
+            ->set('payment_core.payactive.webhook_secret', $config['payactive']['webhook_secret'])
+            ->set('payment_core.payactive.creditor_bank_account_id', $config['payactive']['creditor_bank_account_id'])
+            ->set('payment_core.payactive.payment_methods', $config['payactive']['payment_methods']);
 
         $container->import(\dirname(__DIR__).'/config/services.php');
     }

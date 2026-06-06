@@ -6,9 +6,13 @@ namespace Fewohbee\PaymentCore\Command;
 
 use Fewohbee\PaymentCore\Entity\PaymentTransaction;
 use Fewohbee\PaymentCore\Adapter\Payactive\PayactiveClient;
+use Fewohbee\PaymentCore\Dto\BillingAddress;
+use Fewohbee\PaymentCore\Dto\CreateInvoiceRequest;
 use Fewohbee\PaymentCore\Dto\CreatePaymentRequest;
+use Fewohbee\PaymentCore\Dto\InvoicePosition;
 use Fewohbee\PaymentCore\Enum\PaymentIntent;
 use Fewohbee\PaymentCore\Enum\PaymentKind;
+use Fewohbee\PaymentCore\Service\InvoiceService;
 use Fewohbee\PaymentCore\Service\PaymentService;
 use Fewohbee\PaymentCore\Repository\PaymentTransactionRepository;
 use Symfony\Component\Console\Attribute\AsCommand;
@@ -28,6 +32,8 @@ use Symfony\Component\Console\Style\SymfonyStyle;
  * Subcommands:
  *   initiate           Create a fresh customer + payment, print the hosted URL.
  *                      Pass --kind=deposit|balance|full to classify the transaction.
+ *   invoice            Create + finalize a ZUGFeRD invoice, print pay-link +
+ *                      invoice number, download the PDF (decision-gate A0).
  *   deposit            Convenience demo for the deposit/balance flow: takes
  *                      --total and --percent, creates a DEPOSIT transaction
  *                      for the calculated share, prints the follow-up command
@@ -54,6 +60,7 @@ class SandboxTestCommand extends Command
         private readonly PaymentService $paymentService,
         private readonly PaymentTransactionRepository $transactionRepository,
         private readonly PayactiveClient $payactiveClient,
+        private readonly InvoiceService $invoiceService,
     ) {
         parent::__construct();
     }
@@ -61,7 +68,7 @@ class SandboxTestCommand extends Command
     protected function configure(): void
     {
         $this
-            ->addArgument('action', InputArgument::REQUIRED, 'initiate | deposit | list | sync | show | methods')
+            ->addArgument('action', InputArgument::REQUIRED, 'initiate | deposit | invoice | list | sync | show | methods')
             ->addArgument('id', InputArgument::OPTIONAL, 'Transaction id (sync/show) or externalReference (list)')
             ->addOption('amount', null, InputOption::VALUE_REQUIRED, 'Amount in EUR', '1.23')
             ->addOption('email', null, InputOption::VALUE_REQUIRED, 'Customer email (defaults to a random sandbox address)')
@@ -71,7 +78,16 @@ class SandboxTestCommand extends Command
             ->addOption('purpose', null, InputOption::VALUE_REQUIRED, 'Payment purpose (defaults to "Sandbox-Buchung <reference>")')
             ->addOption('kind', null, InputOption::VALUE_REQUIRED, 'Transaction kind: deposit | balance | full')
             ->addOption('total', null, InputOption::VALUE_REQUIRED, 'Total booking amount in EUR (for "deposit")', '200.00')
-            ->addOption('percent', null, InputOption::VALUE_REQUIRED, 'Deposit percentage of total (for "deposit")', '30');
+            ->addOption('percent', null, InputOption::VALUE_REQUIRED, 'Deposit percentage of total (for "deposit")', '30')
+            // invoice options
+            ->addOption('tax-rate', null, InputOption::VALUE_REQUIRED, 'Tax rate percent for invoice positions (e.g. 19 or 0)', '19')
+            ->addOption('company', null, InputOption::VALUE_REQUIRED, 'Company name (→ ORGANIZATION customer)')
+            ->addOption('vat-id', null, InputOption::VALUE_REQUIRED, 'Customer VAT id (USt-ID)')
+            ->addOption('line', null, InputOption::VALUE_REQUIRED, 'Billing address line', 'Teststraße 1')
+            ->addOption('zip', null, InputOption::VALUE_REQUIRED, 'Billing zip code', '01099')
+            ->addOption('city', null, InputOption::VALUE_REQUIRED, 'Billing city', 'Dresden')
+            ->addOption('country', null, InputOption::VALUE_REQUIRED, 'Billing country (ISO-2)', 'DE')
+            ->addOption('out', null, InputOption::VALUE_REQUIRED, 'Where to write the downloaded invoice PDF', sys_get_temp_dir().'/payactive-invoice.pdf');
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
@@ -82,12 +98,85 @@ class SandboxTestCommand extends Command
         return match ($action) {
             'initiate' => $this->initiate($input, $io),
             'deposit' => $this->deposit($input, $io),
+            'invoice' => $this->invoice($input, $io),
             'list' => $this->list($input, $io),
             'sync' => $this->sync($input, $io),
             'show' => $this->show($input, $io),
             'methods' => $this->methods($io),
-            default => $this->fail($io, sprintf('Unknown action "%s". Use initiate | deposit | list | sync | show | methods.', $action)),
+            default => $this->fail($io, sprintf('Unknown action "%s". Use initiate | deposit | invoice | list | sync | show | methods.', $action)),
         };
+    }
+
+    /**
+     * Decision-gate driver (plan Teil A0): create + finalize a ZUGFeRD invoice,
+     * print invoice number / pay-link / available methods, and download the PDF.
+     * Answers: does invoice-first preserve payment-method choice, is there a
+     * pay-link, does finalize/export work?
+     */
+    private function invoice(InputInterface $input, SymfonyStyle $io): int
+    {
+        $amount = (float) $input->getOption('amount');
+        $taxRate = (float) $input->getOption('tax-rate');
+        $reference = $input->getOption('reference') ?? 'inv-sandbox-'.bin2hex(random_bytes(4));
+        $email = $input->getOption('email') ?? ('sandbox-'.bin2hex(random_bytes(3)).'@example.com');
+        $company = $input->getOption('company');
+        $vatId = $input->getOption('vat-id');
+
+        $request = new CreateInvoiceRequest(
+            externalReference: $reference,
+            currency: 'EUR',
+            purpose: $input->getOption('purpose') ?? ('Sandbox-Rechnung '.$reference),
+            customerEmail: $email,
+            customerFirstName: (string) $input->getOption('first-name'),
+            customerLastName: (string) $input->getOption('last-name'),
+            address: new BillingAddress(
+                (string) $input->getOption('line'),
+                (string) $input->getOption('zip'),
+                (string) $input->getOption('city'),
+                (string) $input->getOption('country'),
+            ),
+            positions: [
+                new InvoicePosition('Sandbox-Posten', 1.0, $amount, $taxRate),
+            ],
+            companyName: $company,
+            vatId: $vatId,
+            customerType: null !== $company ? 'ORGANIZATION' : 'PERSON',
+            grossInvoice: true,
+            defaultTaxRatePercent: $taxRate,
+            paymentTermInDays: 14,
+        );
+
+        $io->section('Creating + finalizing invoice via active provider…');
+        $initiation = $this->invoiceService->createInvoice($request);
+
+        $io->definitionList(
+            ['invoiceId' => $initiation->invoiceId],
+            ['invoiceNumber' => $initiation->invoiceNumber ?? '(none)'],
+            ['providerPaymentId' => $initiation->providerPaymentId ?? '(none → polling will not work)'],
+            ['pay-link' => $initiation->redirectUrl ?? '(none)'],
+            ['externalReference' => $reference],
+            ['amount' => sprintf('%.2f EUR (tax %.0f%%)', $amount, $taxRate)],
+        );
+
+        // Download the finalized PDF to inspect the ZUGFeRD output.
+        try {
+            $doc = $this->invoiceService->downloadInvoice($initiation->invoiceId);
+            $out = (string) $input->getOption('out');
+            file_put_contents($out, $doc->content);
+            $io->success(sprintf('Invoice PDF (%s, %d bytes) written to %s', $doc->contentType, strlen($doc->content), $out));
+        } catch (\Throwable $e) {
+            $io->warning('PDF download failed: '.$e->getMessage());
+        }
+
+        $io->note([
+            'Decision-gate checks (plan A0):',
+            '1. Open the pay-link — which payment methods are offered? (CUSTOMERS_CHOICE → multiple?)',
+            '2. Pay-link present above?',
+            '3. Did the customer receive a Payactive e-mail (→ double-send risk)?',
+            '4. §19 note / 0% correct on the PDF when --tax-rate=0?',
+        ]);
+
+        return Command::SUCCESS;
     }
 
     /**

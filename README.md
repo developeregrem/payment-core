@@ -1,10 +1,7 @@
 # fewohbee/payment-core
 
 Provider-agnostic payment module with a Payactive adapter, packaged as a Symfony
-bundle so it can be reused by multiple apps (the fewohbee PMS and the **FewohBee
-Platform Portal**). The architecture, status-mapping and Payactive specifics are
-documented in the original integration plan
-(`integration-eines-bezahldienstleisters`).
+bundle so it can be reused by multiple apps.
 
 ## What's inside
 
