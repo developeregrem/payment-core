@@ -130,9 +130,10 @@ class PayactiveProvider implements PaymentProviderInterface, InvoiceProviderInte
         if (null !== $request->paymentTermInDays) {
             $payload['paymentTermInDays'] = $request->paymentTermInDays;
         }
-        if (null !== $request->servicePeriodStart) {
-            $payload['servicePeriodStart'] = $request->servicePeriodStart->format('Y-m-d');
-        }
+        // ZUGFeRD/Factur-X requires a service/delivery date; finalize fails (500)
+        // without one. Default to today when the caller gives none (the Payactive
+        // portal UI does the same).
+        $payload['servicePeriodStart'] = ($request->servicePeriodStart ?? new \DateTimeImmutable('today'))->format('Y-m-d');
         if (null !== $request->servicePeriodEnd) {
             $payload['servicePeriodEnd'] = $request->servicePeriodEnd->format('Y-m-d');
         }
