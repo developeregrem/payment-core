@@ -87,6 +87,8 @@ class SandboxTestCommand extends Command
             ->addOption('zip', null, InputOption::VALUE_REQUIRED, 'Billing zip code', '01099')
             ->addOption('city', null, InputOption::VALUE_REQUIRED, 'Billing city', 'Dresden')
             ->addOption('country', null, InputOption::VALUE_REQUIRED, 'Billing country (ISO-2)', 'DE')
+            ->addOption('service-start', null, InputOption::VALUE_REQUIRED, 'Service period start (Y-m-d); defaults to today')
+            ->addOption('service-end', null, InputOption::VALUE_REQUIRED, 'Service period end (Y-m-d); set for a period invoice')
             ->addOption('out', null, InputOption::VALUE_REQUIRED, 'Where to write the downloaded invoice PDF', sys_get_temp_dir().'/payactive-invoice.pdf');
     }
 
@@ -121,6 +123,8 @@ class SandboxTestCommand extends Command
         $email = $input->getOption('email') ?? ('sandbox-'.bin2hex(random_bytes(3)).'@example.com');
         $company = $input->getOption('company');
         $vatId = $input->getOption('vat-id');
+        $serviceStart = $input->getOption('service-start');
+        $serviceEnd = $input->getOption('service-end');
 
         $request = new CreateInvoiceRequest(
             externalReference: $reference,
@@ -144,6 +148,8 @@ class SandboxTestCommand extends Command
             grossInvoice: true,
             defaultTaxRatePercent: $taxRate,
             paymentTermInDays: 14,
+            servicePeriodStart: null !== $serviceStart ? new \DateTimeImmutable((string) $serviceStart) : null,
+            servicePeriodEnd: null !== $serviceEnd ? new \DateTimeImmutable((string) $serviceEnd) : null,
         );
 
         $io->section('Creating + finalizing invoice via active provider…');
