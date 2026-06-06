@@ -122,7 +122,10 @@ class PayactiveProvider implements PaymentProviderInterface, InvoiceProviderInte
             'metadata' => $this->invoiceMetadata($request),
         ];
         if (null !== $request->defaultTaxRatePercent) {
-            $payload['defaultTaxRate'] = ['rate' => $request->defaultTaxRatePercent, 'description' => $request->taxExemptNote ?? ''];
+            $payload['defaultTaxRate'] = [
+                'rate' => $request->defaultTaxRatePercent,
+                'description' => $this->taxDescription($request->defaultTaxRatePercent, $request->taxExemptNote),
+            ];
         }
         if (null !== $request->paymentTermInDays) {
             $payload['paymentTermInDays'] = $request->paymentTermInDays;
@@ -207,10 +210,23 @@ class PayactiveProvider implements PaymentProviderInterface, InvoiceProviderInte
             'price' => $position->unitPrice,
         ];
         if (null !== $position->taxRatePercent) {
-            $mapped['taxRate'] = ['rate' => $position->taxRatePercent, 'description' => ''];
+            $mapped['taxRate'] = [
+                'rate' => $position->taxRatePercent,
+                'description' => $this->taxDescription($position->taxRatePercent, null),
+            ];
         }
 
         return $mapped;
+    }
+
+    /** A non-empty human label for a tax rate (Payactive renders it on the ZUGFeRD PDF). */
+    private function taxDescription(float $rate, ?string $note): string
+    {
+        if (null !== $note && '' !== $note) {
+            return $note;
+        }
+
+        return 0.0 === $rate ? 'Steuerfrei' : rtrim(rtrim(sprintf('%.2f', $rate), '0'), '.').'%';
     }
 
     /** @return array<int, array{key: string, value: string}> */
