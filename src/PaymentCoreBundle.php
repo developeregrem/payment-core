@@ -50,7 +50,11 @@ class PaymentCoreBundle extends AbstractBundle
                         ->arrayNode('payment_methods')
                             ->scalarPrototype()->end()
                             ->defaultValue(['CUSTOMERS_CHOICE'])
-                            ->info('Payment methods offered to the payer. CUSTOMERS_CHOICE lets them pick among the account\'s enabled methods.')
+                            ->info('Methods offered on POST /payments (payment-first). CUSTOMERS_CHOICE is valid here and lets the payer pick.')
+                        ->end()
+                        ->scalarNode('customer_payment_method')
+                            ->defaultValue('ONLINE_PAYMENT')
+                            ->info('Concrete method stored on the customer (ONLINE_PAYMENT|MANUAL_PAYMENT|DIRECT_DEBIT|PAPERLESS). NOT CUSTOMERS_CHOICE. Determines an invoice-first payment\'s method.')
                         ->end()
                     ->end()
                 ->end()
@@ -58,7 +62,7 @@ class PaymentCoreBundle extends AbstractBundle
     }
 
     /**
-     * @param array{active_provider: string, payactive: array{api_key: string, base_url: string, webhook_secret: string, creditor_bank_account_id: ?string, payment_methods: list<string>}} $config
+     * @param array{active_provider: string, payactive: array{api_key: string, base_url: string, webhook_secret: string, creditor_bank_account_id: ?string, payment_methods: list<string>, customer_payment_method: string}} $config
      */
     public function loadExtension(array $config, ContainerConfigurator $container, ContainerBuilder $builder): void
     {
@@ -68,7 +72,8 @@ class PaymentCoreBundle extends AbstractBundle
             ->set('payment_core.payactive.base_url', $config['payactive']['base_url'])
             ->set('payment_core.payactive.webhook_secret', $config['payactive']['webhook_secret'])
             ->set('payment_core.payactive.creditor_bank_account_id', $config['payactive']['creditor_bank_account_id'])
-            ->set('payment_core.payactive.payment_methods', $config['payactive']['payment_methods']);
+            ->set('payment_core.payactive.payment_methods', $config['payactive']['payment_methods'])
+            ->set('payment_core.payactive.customer_payment_method', $config['payactive']['customer_payment_method']);
 
         $container->import(\dirname(__DIR__).'/config/services.php');
     }

@@ -38,14 +38,20 @@ class PayactiveProvider implements PaymentProviderInterface, InvoiceProviderInte
     public const ID = 'payactive';
 
     /**
-     * @param list<string> $paymentMethods Methods offered to the customer.
-     *   Default CUSTOMERS_CHOICE lets the payer pick among the account's enabled
-     *   methods (online transfer / direct debit / manual) — also for invoices.
+     * @param list<string> $paymentMethods Methods offered on POST /payments
+     *   (payment-first). The array lets the payer pick; CUSTOMERS_CHOICE is
+     *   valid here (unlike on the customer).
+     * @param string $customerPaymentMethod Single, valid method stored on the
+     *   customer (PAPERLESS|ONLINE_PAYMENT|MANUAL_PAYMENT|DIRECT_DEBIT).
+     *   CUSTOMERS_CHOICE is NOT accepted by Payactive on the customer, so it
+     *   must be a concrete method. This is what an invoice-first payment uses,
+     *   since invoices have no per-request payment method.
      */
     public function __construct(
         private readonly PayactiveClient $client,
         private readonly array $paymentMethods = ['CUSTOMERS_CHOICE'],
         private readonly ?string $creditorBankAccountId = null,
+        private readonly string $customerPaymentMethod = 'ONLINE_PAYMENT',
     ) {
     }
 
@@ -219,17 +225,14 @@ class PayactiveProvider implements PaymentProviderInterface, InvoiceProviderInte
     }
 
     /**
-     * The single payment method stored on the customer. CUSTOMERS_CHOICE if the
-     * configured set allows the payer to choose, otherwise the single configured
-     * method.
+     * The single, concrete payment method stored on the customer. Payactive does
+     * not accept CUSTOMERS_CHOICE here, so we always use the configured concrete
+     * method (default ONLINE_PAYMENT). This is what an invoice-first payment will
+     * use; payment-first overrides it per request via the paymentMethod array.
      */
     private function customerPaymentMethod(): string
     {
-        if (in_array('CUSTOMERS_CHOICE', $this->paymentMethods, true)) {
-            return 'CUSTOMERS_CHOICE';
-        }
-
-        return 1 === count($this->paymentMethods) ? $this->paymentMethods[0] : 'CUSTOMERS_CHOICE';
+        return $this->customerPaymentMethod;
     }
 
     public function fetchPaymentStatus(string $providerPaymentId): PaymentStatusSnapshot

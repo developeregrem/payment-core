@@ -55,7 +55,8 @@ return static function (Symfony\Component\DependencyInjection\Loader\Configurato
 
     $services->get(PayactiveProvider::class)
         ->arg('$paymentMethods', param('payment_core.payactive.payment_methods'))
-        ->arg('$creditorBankAccountId', param('payment_core.payactive.creditor_bank_account_id'));
+        ->arg('$creditorBankAccountId', param('payment_core.payactive.creditor_bank_account_id'))
+        ->arg('$customerPaymentMethod', param('payment_core.payactive.customer_payment_method'));
 
     $services->get(PayactiveWebhookHandler::class)
         ->arg('$signingSecret', param('payment_core.payactive.webhook_secret'));

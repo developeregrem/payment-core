@@ -38,7 +38,8 @@ final class PayactiveInvoiceTest extends TestCase
                 self::assertSame('ORGANIZATION', $payload['type']);
                 self::assertSame('DE123456789', $payload['vatId']);
                 self::assertSame('Acme GmbH', $payload['companyName']);
-                self::assertSame('CUSTOMERS_CHOICE', $payload['paymentMethod']);
+                // Customer always gets a concrete method (CUSTOMERS_CHOICE is invalid here).
+                self::assertSame('ONLINE_PAYMENT', $payload['paymentMethod']);
                 self::assertSame('Hauptstr. 1', $payload['address']['line']);
                 self::assertSame('01099', $payload['address']['zipCode']);
 
