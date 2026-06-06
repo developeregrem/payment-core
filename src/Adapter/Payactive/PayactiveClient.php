@@ -165,6 +165,9 @@ class PayactiveClient
      */
     public function createInvoice(array $payload): array
     {
+        // Logged so the exact request can be diffed against the portal UI / handed
+        // to Payactive support when finalize misbehaves.
+        $this->logger->info('Payactive createInvoice payload', ['payload' => $payload]);
         $data = $this->requestJson('POST', '/invoices', $payload);
         if (!isset($data['id']) || !is_string($data['id']) || '' === $data['id']) {
             throw new PaymentProviderException('Payactive: createInvoice response missing "id".');

@@ -113,15 +113,20 @@ class PayactiveProvider implements PaymentProviderInterface, InvoiceProviderInte
 
         $customerId = $this->ensureInvoiceCustomer($request);
 
+        $positions = array_map($this->mapPosition(...), $request->positions);
+
         $payload = [
             'customerId' => $customerId,
             'creditorBankAccountId' => $this->creditorBankAccountId,
-            'positions' => array_map($this->mapPosition(...), $request->positions),
+            'positions' => $positions,
             'grossInvoice' => $request->grossInvoice,
             'reverseCharge' => $request->reverseCharge,
-            'metadata' => $this->invoiceMetadata($request),
         ];
-        if (null !== $request->defaultTaxRatePercent) {
+        // Only send a default tax rate when no position carries its own — sending
+        // both is what the working portal-UI invoice does NOT do. Positions with
+        // an explicit taxRate define the rate per line.
+        $positionsHaveTax = [] !== array_filter($positions, static fn (array $p): bool => isset($p['taxRate']));
+        if (!$positionsHaveTax && null !== $request->defaultTaxRatePercent) {
             $payload['defaultTaxRate'] = [
                 'rate' => $request->defaultTaxRatePercent,
                 'description' => $this->taxDescription($request->defaultTaxRatePercent, $request->taxExemptNote),
@@ -228,17 +233,6 @@ class PayactiveProvider implements PaymentProviderInterface, InvoiceProviderInte
         }
 
         return 0.0 === $rate ? 'Steuerfrei' : rtrim(rtrim(sprintf('%.2f', $rate), '0'), '.').'%';
-    }
-
-    /** @return array<int, array{key: string, value: string}> */
-    private function invoiceMetadata(CreateInvoiceRequest $request): array
-    {
-        $meta = [['key' => 'externalReference', 'value' => $request->externalReference]];
-        if (null !== $request->taxExemptNote) {
-            $meta[] = ['key' => 'taxExemptNote', 'value' => $request->taxExemptNote];
-        }
-
-        return $meta;
     }
 
     /**

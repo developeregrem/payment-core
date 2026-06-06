@@ -89,6 +89,7 @@ class SandboxTestCommand extends Command
             ->addOption('country', null, InputOption::VALUE_REQUIRED, 'Billing country (ISO-2)', 'DE')
             ->addOption('service-start', null, InputOption::VALUE_REQUIRED, 'Service period start (Y-m-d); defaults to today')
             ->addOption('service-end', null, InputOption::VALUE_REQUIRED, 'Service period end (Y-m-d); set for a period invoice')
+            ->addOption('gross', null, InputOption::VALUE_NONE, 'Treat the amount as gross (incl. tax). Default: net (matches the working portal-UI invoice).')
             ->addOption('out', null, InputOption::VALUE_REQUIRED, 'Where to write the downloaded invoice PDF', sys_get_temp_dir().'/payactive-invoice.pdf');
     }
 
@@ -145,7 +146,7 @@ class SandboxTestCommand extends Command
             companyName: $company,
             vatId: $vatId,
             customerType: null !== $company ? 'ORGANIZATION' : 'PERSON',
-            grossInvoice: true,
+            grossInvoice: (bool) $input->getOption('gross'),
             defaultTaxRatePercent: $taxRate,
             paymentTermInDays: 14,
             servicePeriodStart: null !== $serviceStart ? new \DateTimeImmutable((string) $serviceStart) : null,
