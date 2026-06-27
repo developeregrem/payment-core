@@ -78,6 +78,11 @@ class PayactiveClient
         return $this->requestJson('GET', '/payments/'.rawurlencode($paymentId));
     }
 
+    public function sendPaymentReminder(string $paymentId): void
+    {
+        $this->requestJson('POST', '/payments/'.rawurlencode($paymentId).'/actions/send-payment-reminder');
+    }
+
     /**
      * Raw GET — useful for probing endpoints not (yet) wrapped by a dedicated method.
      *

@@ -14,7 +14,9 @@ use Fewohbee\PaymentCore\Enum\PaymentStatus;
 use Fewohbee\PaymentCore\Enum\ProviderCapability;
 use Fewohbee\PaymentCore\Exception\PaymentProviderException;
 use Fewohbee\PaymentCore\Provider\InvoiceProviderInterface;
+use Fewohbee\PaymentCore\Provider\PaymentProviderInterface;
 use Fewohbee\PaymentCore\Provider\PaymentProviderRegistry;
+use Fewohbee\PaymentCore\Provider\PaymentReminderProviderInterface;
 use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
 
@@ -85,7 +87,35 @@ class InvoiceService
         return $this->invoiceProvider()->downloadInvoice($invoiceId);
     }
 
-    private function invoiceProvider(): InvoiceProviderInterface&\Fewohbee\PaymentCore\Provider\PaymentProviderInterface
+    /**
+     * Send a payment reminder for the payment transaction created from an
+     * existing invoice.
+     *
+     * @throws PaymentProviderException
+     */
+    public function sendPaymentReminder(string $externalReference, ?string $invoiceId = null): void
+    {
+        $transaction = $this->findInvoiceTransaction($externalReference, $invoiceId);
+        if (!$transaction instanceof PaymentTransaction) {
+            throw new PaymentProviderException(sprintf(
+                'No payment transaction found for external reference "%s"%s.',
+                $externalReference,
+                null !== $invoiceId ? sprintf(' and invoice "%s"', $invoiceId) : ''
+            ));
+        }
+
+        $provider = $this->providerRegistry->get($transaction->getProviderId());
+        if (!$provider instanceof PaymentReminderProviderInterface) {
+            throw new PaymentProviderException(sprintf(
+                'Payment provider "%s" does not support payment reminders.',
+                $provider->getId()
+            ));
+        }
+
+        $provider->sendPaymentReminder($transaction->getProviderPaymentId());
+    }
+
+    private function invoiceProvider(): InvoiceProviderInterface&PaymentProviderInterface
     {
         $provider = $this->providerRegistry->getActive();
         if (!$provider instanceof InvoiceProviderInterface || !$provider->supports(ProviderCapability::INVOICE)) {
@@ -96,6 +126,30 @@ class InvoiceService
         }
 
         return $provider;
+    }
+
+    private function findInvoiceTransaction(string $externalReference, ?string $invoiceId): ?PaymentTransaction
+    {
+        $repository = $this->em->getRepository(PaymentTransaction::class);
+        /** @var PaymentTransaction[] $transactions */
+        $transactions = $repository->findBy(['externalReference' => $externalReference], ['createdAt' => 'DESC']);
+
+        foreach ($transactions as $transaction) {
+            if (!$transaction instanceof PaymentTransaction) {
+                continue;
+            }
+
+            if (null === $invoiceId) {
+                return $transaction;
+            }
+
+            $metadata = $transaction->getMetadata();
+            if (($metadata['invoiceId'] ?? null) === $invoiceId) {
+                return $transaction;
+            }
+        }
+
+        return null;
     }
 
     private function grossTotal(CreateInvoiceRequest $request): float

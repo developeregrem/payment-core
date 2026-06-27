@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Fewohbee\PaymentCore\Tests\Unit\Service;
 
 use Doctrine\ORM\EntityManagerInterface;
+use Doctrine\ORM\EntityRepository;
 use Fewohbee\PaymentCore\Dto\BillingAddress;
 use Fewohbee\PaymentCore\Dto\CreateInvoiceRequest;
 use Fewohbee\PaymentCore\Dto\CreatePaymentRequest;
@@ -13,12 +14,14 @@ use Fewohbee\PaymentCore\Dto\InvoiceInitiation;
 use Fewohbee\PaymentCore\Dto\PaymentInitiation;
 use Fewohbee\PaymentCore\Dto\PaymentStatusSnapshot;
 use Fewohbee\PaymentCore\Entity\PaymentTransaction;
+use Fewohbee\PaymentCore\Enum\PaymentIntent;
 use Fewohbee\PaymentCore\Enum\PaymentStatus;
 use Fewohbee\PaymentCore\Enum\ProviderCapability;
 use Fewohbee\PaymentCore\Exception\PaymentProviderException;
 use Fewohbee\PaymentCore\Provider\InvoiceProviderInterface;
 use Fewohbee\PaymentCore\Provider\PaymentProviderInterface;
 use Fewohbee\PaymentCore\Provider\PaymentProviderRegistry;
+use Fewohbee\PaymentCore\Provider\PaymentReminderProviderInterface;
 use Fewohbee\PaymentCore\Service\InvoiceService;
 use PHPUnit\Framework\TestCase;
 
@@ -85,6 +88,63 @@ final class InvoiceServiceTest extends TestCase
 
         $this->expectException(PaymentProviderException::class);
         $service->createInvoice($this->request());
+    }
+
+    public function testSendPaymentReminderUsesInvoiceTransactionProviderPaymentId(): void
+    {
+        $provider = new class implements PaymentProviderInterface, PaymentReminderProviderInterface {
+            public ?string $remindedPaymentId = null;
+
+            public function getId(): string
+            {
+                return 'payactive';
+            }
+
+            public function supports(ProviderCapability $c): bool
+            {
+                return false;
+            }
+
+            public function createPayment(CreatePaymentRequest $r): PaymentInitiation
+            {
+                return new PaymentInitiation('x', null);
+            }
+
+            public function fetchPaymentStatus(string $id): PaymentStatusSnapshot
+            {
+                return new PaymentStatusSnapshot(PaymentStatus::PENDING);
+            }
+
+            public function sendPaymentReminder(string $providerPaymentId): void
+            {
+                $this->remindedPaymentId = $providerPaymentId;
+            }
+        };
+
+        $transaction = new PaymentTransaction(
+            providerId: 'payactive',
+            providerPaymentId: 'pay-1',
+            externalReference: 'order-42',
+            amount: 368.0,
+            currency: 'EUR',
+            purpose: 'FewohBee Cloud',
+            intent: PaymentIntent::PAYMENT,
+        );
+        $transaction->setMetadata(['invoiceId' => 'inv-1']);
+
+        $repository = $this->createMock(EntityRepository::class);
+        $repository->expects(self::once())
+            ->method('findBy')
+            ->with(['externalReference' => 'order-42'], ['createdAt' => 'DESC'])
+            ->willReturn([$transaction]);
+
+        $em = $this->createMock(EntityManagerInterface::class);
+        $em->method('getRepository')->with(PaymentTransaction::class)->willReturn($repository);
+
+        $service = new InvoiceService(new PaymentProviderRegistry([$provider], 'payactive'), $em);
+        $service->sendPaymentReminder('order-42', 'inv-1');
+
+        self::assertSame('pay-1', $provider->remindedPaymentId);
     }
 
     private function invoiceProvider(InvoiceInitiation $initiation): PaymentProviderInterface&InvoiceProviderInterface

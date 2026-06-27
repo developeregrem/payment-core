@@ -123,6 +123,15 @@ final class PayactiveInvoiceTest extends TestCase
         self::assertStringContainsString('inv-9', $doc->filename);
     }
 
+    public function testSendPaymentReminderDelegatesToClient(): void
+    {
+        $client = $this->createMock(PayactiveClient::class);
+        $client->expects(self::once())->method('sendPaymentReminder')->with('pay-1');
+
+        $provider = new PayactiveProvider($client, ['CUSTOMERS_CHOICE'], 'bank-1');
+        $provider->sendPaymentReminder('pay-1');
+    }
+
     private function request(): CreateInvoiceRequest
     {
         return new CreateInvoiceRequest(

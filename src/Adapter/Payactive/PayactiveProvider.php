@@ -16,6 +16,7 @@ use Fewohbee\PaymentCore\Enum\ProviderCapability;
 use Fewohbee\PaymentCore\Exception\PaymentProviderException;
 use Fewohbee\PaymentCore\Provider\InvoiceProviderInterface;
 use Fewohbee\PaymentCore\Provider\PaymentProviderInterface;
+use Fewohbee\PaymentCore\Provider\PaymentReminderProviderInterface;
 
 /**
  * Payactive adapter. Self-contained — depends only on the Core Payment module
@@ -33,7 +34,7 @@ use Fewohbee\PaymentCore\Provider\PaymentProviderInterface;
  *   3) POST /invoices/{id}/actions/finalize → invoiceNumber + paymentId (ZUGFeRD)
  *   4) GET  /payments/{paymentId}/payment-link → pay-link
  */
-class PayactiveProvider implements PaymentProviderInterface, InvoiceProviderInterface
+class PayactiveProvider implements PaymentProviderInterface, InvoiceProviderInterface, PaymentReminderProviderInterface
 {
     public const ID = 'payactive';
 
@@ -169,6 +170,11 @@ class PayactiveProvider implements PaymentProviderInterface, InvoiceProviderInte
             contentType: $doc['contentType'],
             content: $doc['content'],
         );
+    }
+
+    public function sendPaymentReminder(string $providerPaymentId): void
+    {
+        $this->client->sendPaymentReminder($providerPaymentId);
     }
 
     /**
