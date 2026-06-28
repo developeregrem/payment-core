@@ -297,6 +297,19 @@ class PayactiveClient
             throw new PaymentProviderException(sprintf('Payactive: transport error on %s %s: %s', $method, $path, $e->getMessage()), 0, $e);
         }
 
+        if (str_starts_with(ltrim($content), '{')) {
+            $decoded = json_decode($content, true);
+            $base64 = is_array($decoded) ? ($decoded['content'] ?? null) : null;
+            if (is_string($base64) && '' !== $base64) {
+                $binary = base64_decode($base64, true);
+                if (false === $binary) {
+                    throw new PaymentProviderException(sprintf('Payactive: invalid base64 content on %s %s.', $method, $path));
+                }
+
+                return ['content' => $binary, 'contentType' => 'application/pdf'];
+            }
+        }
+
         return ['content' => $content, 'contentType' => $contentType];
     }
 
