@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Fewohbee\PaymentCore\Tests\Unit\Adapter\Payactive;
 
 use Fewohbee\PaymentCore\Adapter\Payactive\PayactiveClient;
+use Fewohbee\PaymentCore\Exception\PaymentProviderException;
 use PHPUnit\Framework\TestCase;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 use Symfony\Contracts\HttpClient\ResponseInterface;
@@ -35,5 +36,34 @@ final class PayactiveClientTest extends TestCase
 
         self::assertSame("%PDF-1.7\nbody", $document['content']);
         self::assertSame('application/pdf', $document['contentType']);
+    }
+
+    public function testMissingPaymentFlowLinkReturnsNull(): void
+    {
+        $response = $this->createMock(ResponseInterface::class);
+        $response->method('getStatusCode')->willReturn(404);
+        $response->method('getContent')->willReturn('{ "status" : "NOT_FOUND", "message" : "Payment Flow link could not be found." }');
+
+        $http = $this->createMock(HttpClientInterface::class);
+        $http->method('request')->willReturn($response);
+
+        $client = new PayactiveClient($http, 'api-key', 'https://pay.example');
+
+        self::assertNull($client->getPaymentLink('pay-1'));
+    }
+
+    public function testPaymentLinkHttpErrorsStillThrow(): void
+    {
+        $response = $this->createMock(ResponseInterface::class);
+        $response->method('getStatusCode')->willReturn(500);
+        $response->method('getContent')->willReturn('server error');
+
+        $http = $this->createMock(HttpClientInterface::class);
+        $http->method('request')->willReturn($response);
+
+        $client = new PayactiveClient($http, 'api-key', 'https://pay.example');
+
+        $this->expectException(PaymentProviderException::class);
+        $client->getPaymentLink('pay-1');
     }
 }

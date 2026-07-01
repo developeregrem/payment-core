@@ -66,7 +66,15 @@ class PayactiveClient
 
     public function getPaymentLink(string $paymentId): ?string
     {
-        $data = $this->requestJson('GET', '/payments/'.rawurlencode($paymentId).'/payment-link');
+        try {
+            $data = $this->requestJson('GET', '/payments/'.rawurlencode($paymentId).'/payment-link');
+        } catch (PaymentProviderException $e) {
+            if (str_contains($e->getMessage(), 'HTTP 404')) {
+                return null;
+            }
+
+            throw $e;
+        }
         $link = $data['paymentLink'] ?? null;
 
         return is_string($link) && '' !== $link ? $link : null;
