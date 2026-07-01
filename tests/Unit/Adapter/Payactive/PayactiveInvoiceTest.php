@@ -86,9 +86,19 @@ final class PayactiveInvoiceTest extends TestCase
     public function testCreateInvoiceUpdatesExistingCustomer(): void
     {
         $client = $this->createMock(PayactiveClient::class);
-        $client->method('findCustomerIdByEmail')->willReturn('cust-existing');
+        $client->method('findCustomerByEmail')->willReturn([
+            'id' => 'cust-existing',
+            'emailAddress' => 'kunde@example.com',
+            'paymentMethod' => 'MANUAL_PAYMENT',
+        ]);
         $client->expects(self::never())->method('createCustomer');
-        $client->expects(self::once())->method('updateCustomer')->with('cust-existing', self::isType('array'));
+        $client->expects(self::once())
+            ->method('updateCustomer')
+            ->with('cust-existing', self::callback(static function (array $payload): bool {
+                self::assertSame('MANUAL_PAYMENT', $payload['paymentMethod']);
+
+                return true;
+            }));
         $client->method('createInvoice')->willReturn(['id' => 'inv-2']);
         $client->method('finalizeInvoice')->willReturn(['invoiceNumber' => 'RE-2', 'paymentId' => 'pay-2']);
         $client->method('getPaymentLink')->willReturn('https://pay.example/inv-2');

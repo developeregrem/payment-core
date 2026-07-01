@@ -99,6 +99,20 @@ class PayactiveClient
      */
     public function findCustomerIdByEmail(string $email): ?string
     {
+        $customer = $this->findCustomerByEmail($email);
+        $id = $customer['id'] ?? null;
+
+        return is_string($id) && '' !== $id ? $id : null;
+    }
+
+    /**
+     * Returns the customer whose `emailAddress` exactly matches the given email,
+     * or null if no such customer exists yet.
+     *
+     * @return array<string, mixed>|null
+     */
+    public function findCustomerByEmail(string $email): ?array
+    {
         $data = $this->requestJson('GET', '/customers/search?'.http_build_query([
             'search' => $email,
             'size' => 25,
@@ -114,14 +128,18 @@ class PayactiveClient
                 continue;
             }
             $candidateEmail = $customer['emailAddress'] ?? null;
-            $candidateId = $customer['id'] ?? null;
-            if (is_string($candidateEmail) && is_string($candidateId)
-                && 0 === strcasecmp($candidateEmail, $email)) {
-                return $candidateId;
+            if (is_string($candidateEmail) && 0 === strcasecmp($candidateEmail, $email)) {
+                return $customer;
             }
         }
 
         return null;
+    }
+
+    /** @return array<string, mixed> */
+    public function getCustomer(string $customerId): array
+    {
+        return $this->requestJson('GET', '/customers/'.rawurlencode($customerId));
     }
 
     /**

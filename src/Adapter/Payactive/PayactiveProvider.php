@@ -203,14 +203,34 @@ class PayactiveProvider implements PaymentProviderInterface, InvoiceProviderInte
         ];
         $customerPayload = array_filter($customerPayload, static fn ($v) => null !== $v);
 
-        $existingId = $this->client->findCustomerIdByEmail($request->customerEmail);
+        $existing = $this->client->findCustomerByEmail($request->customerEmail);
+        $existingId = is_array($existing) && is_string($existing['id'] ?? null) ? $existing['id'] : null;
         if (null !== $existingId) {
+            $customerPayload['paymentMethod'] = $this->existingCustomerPaymentMethod($existing, $existingId);
             $this->client->updateCustomer($existingId, $customerPayload);
 
             return $existingId;
         }
 
         return $this->client->createCustomer($customerPayload);
+    }
+
+    /**
+     * Keep the payment method selected in Payactive (e.g. MANUAL_PAYMENT or
+     * DIRECT_DEBIT). Updating address/VAT data must not reset an invoice-first
+     * customer back to the configured onboarding default.
+     *
+     * @param array<string, mixed> $existing
+     */
+    private function existingCustomerPaymentMethod(array $existing, string $customerId): string
+    {
+        $method = $existing['paymentMethod'] ?? null;
+        if (!is_string($method) || '' === $method) {
+            $fresh = $this->client->getCustomer($customerId);
+            $method = $fresh['paymentMethod'] ?? null;
+        }
+
+        return is_string($method) && '' !== $method ? $method : $this->customerPaymentMethod();
     }
 
     /** @return array<string, mixed> */
