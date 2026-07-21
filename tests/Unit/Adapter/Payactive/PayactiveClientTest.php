@@ -66,4 +66,22 @@ final class PayactiveClientTest extends TestCase
         $this->expectException(PaymentProviderException::class);
         $client->getPaymentLink('pay-1');
     }
+
+    public function testPaymentMethodChangeAcceptsScalarJsonResponse(): void
+    {
+        $response = $this->createMock(ResponseInterface::class);
+        $response->method('getStatusCode')->willReturn(200);
+        $response->method('getContent')->willReturn('"https://pay.example/change/abc"');
+
+        $http = $this->createMock(HttpClientInterface::class);
+        $http->expects(self::once())->method('request')->with(
+            'PATCH',
+            'https://pay.example/customers/cust-1/actions/change-payment-method?invitationType=EMAIL',
+            self::isType('array'),
+        )->willReturn($response);
+
+        $client = new PayactiveClient($http, 'api-key', 'https://pay.example');
+
+        self::assertSame('https://pay.example/change/abc', $client->requestPaymentMethodChange('cust-1', 'EMAIL'));
+    }
 }

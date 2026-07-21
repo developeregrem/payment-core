@@ -188,6 +188,28 @@ class PayactiveClient
     }
 
     /**
+     * Ask Payactive to let the customer change their payment method. EMAIL
+     * deliberately returns no reusable link; LINK/MANUAL may return one.
+     */
+    public function requestPaymentMethodChange(string $customerId, string $invitationType): ?string
+    {
+        $path = '/customers/'.rawurlencode($customerId).'/actions/change-payment-method?'.http_build_query([
+            'invitationType' => $invitationType,
+        ]);
+        $value = $this->requestValue('PATCH', $path);
+
+        return is_string($value) && '' !== trim($value) ? $value : null;
+    }
+
+    /** @return list<string> */
+    public function getCustomerPaymentMethods(string $customerId): array
+    {
+        $data = $this->requestJson('GET', '/customers/'.rawurlencode($customerId).'/payment-methods');
+
+        return array_values(array_filter($data, static fn (mixed $method): bool => is_string($method) && '' !== $method));
+    }
+
+    /**
      * Create an invoice (DRAFT). Returns the full invoice response.
      *
      * @param array<string, mixed> $payload
@@ -205,6 +227,37 @@ class PayactiveClient
         }
 
         return $data;
+    }
+
+    /**
+     * Recover a possibly ambiguous invoice creation by exact metadata match.
+     * Payactive has no documented idempotency header for POST /invoices.
+     *
+     * @return array<string, mixed>|null
+     */
+    public function findInvoiceByMetadata(string $key, string $value): ?array
+    {
+        $data = $this->requestJson('GET', '/invoices?'.http_build_query([
+            'filters' => ['search' => $value],
+        ]));
+        $invoices = $data['_embedded']['invoices'] ?? [];
+        if (!is_array($invoices)) {
+            return null;
+        }
+
+        foreach ($invoices as $invoice) {
+            if (!is_array($invoice) || !is_array($invoice['metadata'] ?? null)) {
+                continue;
+            }
+            foreach ($invoice['metadata'] as $metadata) {
+                if (is_array($metadata) && ($metadata['key'] ?? null) === $key
+                    && (string) ($metadata['value'] ?? '') === $value) {
+                    return $invoice;
+                }
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -243,6 +296,23 @@ class PayactiveClient
      * @return array<string, mixed>
      */
     private function requestJson(string $method, string $path, ?array $body = null): array
+    {
+        $value = $this->requestValue($method, $path, $body);
+        if (!is_array($value)) {
+            throw new PaymentProviderException(sprintf('Payactive: expected JSON object or array on %s %s.', $method, $path));
+        }
+
+        return $value;
+    }
+
+    /**
+     * Payactive has successful JSON endpoints returning a scalar string.
+     *
+     * @param array<string, mixed>|null $body
+     *
+     * @return array<mixed>|string|int|float|bool|null
+     */
+    private function requestValue(string $method, string $path, ?array $body = null): array|string|int|float|bool|null
     {
         if ('' === $this->apiKey) {
             throw new PaymentProviderException('Payactive: PAYACTIVE_API_KEY is not configured.');
@@ -288,8 +358,8 @@ class PayactiveClient
             if ('' === trim($response->getContent(false))) {
                 return [];
             }
-            $data = $response->toArray(false);
-        } catch (ExceptionInterface $e) {
+            $data = json_decode(trim($response->getContent(false)), true, 512, JSON_THROW_ON_ERROR);
+        } catch (ExceptionInterface|\JsonException $e) {
             throw new PaymentProviderException(sprintf('Payactive: invalid JSON on %s %s: %s', $method, $path, $e->getMessage()), 0, $e);
         }
 

@@ -10,6 +10,9 @@ use Fewohbee\PaymentCore\Dto\BillingAddress;
 use Fewohbee\PaymentCore\Dto\CreateInvoiceRequest;
 use Fewohbee\PaymentCore\Dto\InvoicePosition;
 use Fewohbee\PaymentCore\Enum\ProviderCapability;
+use Fewohbee\PaymentCore\Enum\CollectionMode;
+use Fewohbee\PaymentCore\Enum\PaymentMethodChangeDelivery;
+use Fewohbee\PaymentCore\Enum\PaymentStatus;
 use Fewohbee\PaymentCore\Exception\PaymentProviderException;
 use PHPUnit\Framework\TestCase;
 
@@ -40,6 +43,7 @@ final class PayactiveInvoiceTest extends TestCase
                 self::assertSame('Acme GmbH', $payload['companyName']);
                 // Customer always gets a concrete method (CUSTOMERS_CHOICE is invalid here).
                 self::assertSame('ONLINE_PAYMENT', $payload['paymentMethod']);
+                self::assertSame('customer-7', $payload['externalRef']);
                 self::assertSame('Hauptstr. 1', $payload['address']['line']);
                 self::assertSame('01099', $payload['address']['zipCode']);
 
@@ -58,6 +62,10 @@ final class PayactiveInvoiceTest extends TestCase
                 self::assertSame(319.0, $payload['positions'][0]['price']);
                 self::assertSame(19.0, $payload['positions'][0]['taxRate']['rate']);
                 self::assertSame(7, $payload['paymentTermInDays']);
+                self::assertSame([
+                    ['key' => 'externalReference', 'value' => 'order-42', 'publicVisible' => false],
+                    ['key' => 'orderReference', 'value' => 'order-42', 'publicVisible' => false],
+                ], $payload['metadata']);
 
                 return true;
             }))
@@ -72,6 +80,7 @@ final class PayactiveInvoiceTest extends TestCase
             ->method('getPaymentLink')
             ->with('pay-1')
             ->willReturn('https://pay.example/inv-1');
+        $client->method('getPayment')->with('pay-1')->willReturn(['paymentMethod' => 'ONLINE_PAYMENT']);
 
         $provider = new PayactiveProvider($client, ['CUSTOMERS_CHOICE'], 'bank-1');
 
@@ -81,6 +90,8 @@ final class PayactiveInvoiceTest extends TestCase
         self::assertSame('RE-2026-001', $result->invoiceNumber);
         self::assertSame('pay-1', $result->providerPaymentId);
         self::assertSame('https://pay.example/inv-1', $result->redirectUrl);
+        self::assertSame('cust-1', $result->providerCustomerId);
+        self::assertSame(CollectionMode::HOSTED_ACTION, $result->collectionMode);
     }
 
     public function testCreateInvoiceUpdatesExistingCustomer(): void
@@ -102,6 +113,7 @@ final class PayactiveInvoiceTest extends TestCase
         $client->method('createInvoice')->willReturn(['id' => 'inv-2']);
         $client->method('finalizeInvoice')->willReturn(['invoiceNumber' => 'RE-2', 'paymentId' => 'pay-2']);
         $client->method('getPaymentLink')->willReturn('https://pay.example/inv-2');
+        $client->method('getPayment')->willReturn(['paymentMethod' => 'MANUAL_PAYMENT']);
 
         $provider = new PayactiveProvider($client, ['CUSTOMERS_CHOICE'], 'bank-1');
         $result = $provider->createInvoice($this->request());
@@ -142,6 +154,74 @@ final class PayactiveInvoiceTest extends TestCase
         $provider->sendPaymentReminder('pay-1');
     }
 
+    public function testInvoiceWithoutPayLinkCanBeAutomaticCollection(): void
+    {
+        $client = $this->createMock(PayactiveClient::class);
+        $client->method('findCustomerByEmail')->willReturn(null);
+        $client->method('createCustomer')->willReturn('cust-1');
+        $client->method('createInvoice')->willReturn(['id' => 'inv-1']);
+        $client->method('finalizeInvoice')->willReturn(['invoiceNumber' => 'RE-1', 'paymentId' => 'pay-1']);
+        $client->method('getPaymentLink')->willReturn(null);
+        $client->method('getPayment')->willReturn(['paymentMethod' => 'DIRECT_DEBIT']);
+
+        $result = (new PayactiveProvider($client, ['CUSTOMERS_CHOICE'], 'bank-1'))->createInvoice($this->request());
+
+        self::assertNull($result->redirectUrl);
+        self::assertSame(CollectionMode::AUTOMATIC, $result->collectionMode);
+        self::assertSame('DIRECT_DEBIT', $result->providerPaymentMethod);
+    }
+
+    public function testRequestsProviderManagedPaymentMethodChangeByEmail(): void
+    {
+        $client = $this->createMock(PayactiveClient::class);
+        $client->expects(self::once())->method('requestPaymentMethodChange')->with('cust-1', 'EMAIL')->willReturn(null);
+        $provider = new PayactiveProvider($client, ['CUSTOMERS_CHOICE'], 'bank-1');
+
+        $result = $provider->requestPaymentMethodChange('cust-1', PaymentMethodChangeDelivery::EMAIL);
+
+        self::assertSame(PaymentMethodChangeDelivery::EMAIL, $result->delivery);
+        self::assertNull($result->actionUrl);
+    }
+
+    public function testRecoversExistingInvoiceByMetadataWithoutDuplicatePost(): void
+    {
+        $client = $this->createMock(PayactiveClient::class);
+        $client->method('findCustomerByEmail')->willReturn([
+            'id' => 'cust-1',
+            'paymentMethod' => 'DIRECT_DEBIT',
+        ]);
+        $client->method('findInvoiceByMetadata')->with('externalReference', 'order-42')->willReturn([
+            'id' => 'inv-existing',
+            'status' => 'OPEN',
+            'invoiceNumber' => 'RE-existing',
+            'paymentId' => 'pay-existing',
+        ]);
+        $client->expects(self::never())->method('createInvoice');
+        $client->expects(self::never())->method('finalizeInvoice');
+        $client->method('getPaymentLink')->willReturn(null);
+        $client->method('getPayment')->willReturn(['paymentMethod' => 'DIRECT_DEBIT']);
+
+        $result = (new PayactiveProvider($client, ['CUSTOMERS_CHOICE'], 'bank-1'))->createInvoice($this->request());
+
+        self::assertSame('inv-existing', $result->invoiceId);
+        self::assertSame(CollectionMode::AUTOMATIC, $result->collectionMode);
+    }
+
+    public function testPollingDistinguishesRefundAndChargebackReviewStates(): void
+    {
+        $client = $this->createMock(PayactiveClient::class);
+        $client->method('getPayment')->willReturnOnConsecutiveCalls(
+            ['state' => 'REFUND_IN_PROGRESS'],
+            ['state' => 'REFUND_COMPLETED'],
+            ['state' => 'CHARGED_BACK'],
+        );
+        $provider = new PayactiveProvider($client);
+
+        self::assertSame(PaymentStatus::REFUND_PENDING, $provider->fetchPaymentStatus('p')->status);
+        self::assertSame(PaymentStatus::REFUNDED, $provider->fetchPaymentStatus('p')->status);
+        self::assertSame(PaymentStatus::CHARGED_BACK, $provider->fetchPaymentStatus('p')->status);
+    }
+
     private function request(): CreateInvoiceRequest
     {
         return new CreateInvoiceRequest(
@@ -161,6 +241,8 @@ final class PayactiveInvoiceTest extends TestCase
             customerType: 'ORGANIZATION',
             grossInvoice: true,
             paymentTermInDays: 7,
+            customerExternalReference: 'customer-7',
+            metadata: ['orderReference' => 'order-42'],
         );
     }
 }

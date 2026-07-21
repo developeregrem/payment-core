@@ -13,8 +13,9 @@ use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Style\SymfonyStyle;
 
 #[AsCommand(
-    name: 'payment:reconcile-pending',
-    description: 'Poll provider status for all pending/initiated payment transactions and dispatch events on status change.'
+    name: 'payment:reconcile-due',
+    description: 'Poll all due payment transactions, including scheduled settled-payment reversal audits.',
+    aliases: ['payment:reconcile-pending'],
 )]
 class ReconcilePendingPaymentsCommand extends Command
 {
@@ -34,6 +35,11 @@ class ReconcilePendingPaymentsCommand extends Command
         $io = new SymfonyStyle($input, $output);
         $limit = (int) $input->getOption('limit');
 
+        $webhooks = $this->paymentService->processPendingWebhooks($limit);
+        if ($webhooks > 0) {
+            $io->writeln(sprintf('Applied %d queued webhook event(s).', $webhooks));
+        }
+
         $pending = $this->paymentService->findPending($limit);
         if ([] === $pending) {
             $io->success('No pending payment transactions.');
@@ -44,11 +50,25 @@ class ReconcilePendingPaymentsCommand extends Command
         $io->note(sprintf('Processing %d pending transaction(s)…', count($pending)));
 
         $changed = 0;
+        $failed = 0;
         foreach ($pending as $transaction) {
             $before = $transaction->getStatus();
             try {
-                $after = $this->paymentService->syncTransaction($transaction);
+                $result = $this->paymentService->syncTransactionResult($transaction);
+                $after = $result->status;
+                if (!$result->successful) {
+                    ++$failed;
+                    $io->warning(sprintf(
+                        'Transaction #%d (%s/%s): %s',
+                        $transaction->getId(),
+                        $transaction->getProviderId(),
+                        $transaction->getProviderPaymentId(),
+                        $result->error ?? 'provider synchronization failed',
+                    ));
+                    continue;
+                }
             } catch (\Throwable $e) {
+                ++$failed;
                 $io->warning(sprintf(
                     'Transaction #%d (%s/%s): %s',
                     $transaction->getId(),
@@ -68,6 +88,12 @@ class ReconcilePendingPaymentsCommand extends Command
                     $after->value,
                 ));
             }
+        }
+
+        if ($failed > 0) {
+            $io->error(sprintf('Done with provider errors. %d changed, %d failed and were rescheduled.', $changed, $failed));
+
+            return Command::FAILURE;
         }
 
         $io->success(sprintf('Done. %d transaction(s) changed state.', $changed));

@@ -19,6 +19,7 @@ final readonly class CreateInvoiceRequest
     /**
      * @param InvoicePosition[] $positions
      * @param 'PERSON'|'ORGANIZATION' $customerType
+     * @param array<string, string|int|float|bool|null> $metadata
      */
     public function __construct(
         public string $externalReference,
@@ -40,6 +41,11 @@ final readonly class CreateInvoiceRequest
         public ?\DateTimeImmutable $servicePeriodStart = null,
         public ?\DateTimeImmutable $servicePeriodEnd = null,
         public ?PaymentKind $kind = null,
+        /** Provider customer id previously persisted by the host application. */
+        public ?string $providerCustomerId = null,
+        /** Stable customer reference; must not be an order/invoice reference. */
+        public ?string $customerExternalReference = null,
+        public array $metadata = [],
     ) {
     }
 }

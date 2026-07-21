@@ -11,13 +11,15 @@ enum PaymentStatus: string
     case SETTLED = 'settled';
     case FAILED = 'failed';
     case CANCELLED = 'cancelled';
+    case REFUND_PENDING = 'refund_pending';
     case REFUNDED = 'refunded';
+    case CHARGED_BACK = 'charged_back';
 
     public function isTerminal(): bool
     {
         return match ($this) {
-            self::SETTLED, self::FAILED, self::CANCELLED, self::REFUNDED => true,
-            self::PENDING, self::INITIATED => false,
+            self::SETTLED, self::FAILED, self::CANCELLED, self::REFUNDED, self::CHARGED_BACK => true,
+            self::PENDING, self::INITIATED, self::REFUND_PENDING => false,
         };
     }
 }

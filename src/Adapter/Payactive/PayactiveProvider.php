@@ -9,13 +9,17 @@ use Fewohbee\PaymentCore\Dto\CreatePaymentRequest;
 use Fewohbee\PaymentCore\Dto\InvoiceDocument;
 use Fewohbee\PaymentCore\Dto\InvoiceInitiation;
 use Fewohbee\PaymentCore\Dto\InvoicePosition;
+use Fewohbee\PaymentCore\Dto\PaymentMethodChangeResult;
 use Fewohbee\PaymentCore\Dto\PaymentInitiation;
 use Fewohbee\PaymentCore\Dto\PaymentStatusSnapshot;
+use Fewohbee\PaymentCore\Enum\CollectionMode;
+use Fewohbee\PaymentCore\Enum\PaymentMethodChangeDelivery;
 use Fewohbee\PaymentCore\Enum\PaymentStatus;
 use Fewohbee\PaymentCore\Enum\ProviderCapability;
 use Fewohbee\PaymentCore\Exception\PaymentProviderException;
 use Fewohbee\PaymentCore\Provider\InvoiceProviderInterface;
 use Fewohbee\PaymentCore\Provider\PaymentProviderInterface;
+use Fewohbee\PaymentCore\Provider\PaymentMethodManagementProviderInterface;
 use Fewohbee\PaymentCore\Provider\PaymentReminderProviderInterface;
 
 /**
@@ -34,7 +38,7 @@ use Fewohbee\PaymentCore\Provider\PaymentReminderProviderInterface;
  *   3) POST /invoices/{id}/actions/finalize → invoiceNumber + paymentId (ZUGFeRD)
  *   4) GET  /payments/{paymentId}/payment-link → pay-link
  */
-class PayactiveProvider implements PaymentProviderInterface, InvoiceProviderInterface, PaymentReminderProviderInterface
+class PayactiveProvider implements PaymentProviderInterface, InvoiceProviderInterface, PaymentReminderProviderInterface, PaymentMethodManagementProviderInterface
 {
     public const ID = 'payactive';
 
@@ -64,12 +68,15 @@ class PayactiveProvider implements PaymentProviderInterface, InvoiceProviderInte
     public function supports(ProviderCapability $capability): bool
     {
         return match ($capability) {
-            ProviderCapability::ONLINE_PAYMENT => true,
+            ProviderCapability::ONLINE_PAYMENT,
+            ProviderCapability::DIRECT_DEBIT,
+            ProviderCapability::CARD_PAYMENT,
+            ProviderCapability::PAYMENT_METHOD_MANAGEMENT,
+            ProviderCapability::AUTOMATIC_COLLECTION,
+            ProviderCapability::OFFLINE_TRANSFER => true,
             ProviderCapability::INVOICE => null !== $this->creditorBankAccountId && '' !== $this->creditorBankAccountId,
-            // DIRECT_DEBIT is technically supported by Payactive but requires the
-            // SEPA mandate flow which is not implemented here yet.
-            // CARD_PREAUTH is not visible in the Payactive sandbox UI — pending clarification.
-            // REFUND not yet wired up.
+            // Mandate/card details stay in Payactive's hosted customer flow;
+            // pre-authorization and merchant-initiated refunds are not exposed.
             default => false,
         };
     }
@@ -123,6 +130,22 @@ class PayactiveProvider implements PaymentProviderInterface, InvoiceProviderInte
             'grossInvoice' => $request->grossInvoice,
             'reverseCharge' => $request->reverseCharge,
         ];
+        // This first value is the provider-side idempotency/recovery key and
+        // cannot be replaced by optional caller metadata (array union semantics).
+        $invoiceMetadata = ['externalReference' => $request->externalReference] + $request->metadata;
+        if ([] !== $invoiceMetadata) {
+            $payload['metadata'] = [];
+            foreach ($invoiceMetadata as $key => $value) {
+                if (null === $value) {
+                    continue;
+                }
+                $payload['metadata'][] = [
+                    'key' => (string) $key,
+                    'value' => is_bool($value) ? ($value ? 'true' : 'false') : (string) $value,
+                    'publicVisible' => false,
+                ];
+            }
+        }
         // Only send a default tax rate when no position carries its own — sending
         // both is what the working portal-UI invoice does NOT do. Positions with
         // an explicit taxRate define the rate per line.
@@ -144,20 +167,52 @@ class PayactiveProvider implements PaymentProviderInterface, InvoiceProviderInte
             $payload['servicePeriodEnd'] = $request->servicePeriodEnd->format('Y-m-d');
         }
 
+        $existingInvoice = $this->client->findInvoiceByMetadata('externalReference', $request->externalReference);
+        if (null !== $existingInvoice) {
+            return $this->resumeInvoice($existingInvoice, $customerId);
+        }
+
         $invoiceId = $this->client->createInvoice($payload)['id'];
         $finalized = $this->client->finalizeInvoice($invoiceId);
+
+        return $this->invoiceInitiation($invoiceId, $finalized, $customerId);
+    }
+
+    /** @param array<string, mixed> $invoice */
+    private function resumeInvoice(array $invoice, string $customerId): InvoiceInitiation
+    {
+        $invoiceId = is_string($invoice['id'] ?? null) ? $invoice['id'] : '';
+        if ('' === $invoiceId) {
+            throw new PaymentProviderException('Payactive: recovered invoice is missing its id.');
+        }
+        $status = is_string($invoice['status'] ?? null) ? $invoice['status'] : '';
+        $finalized = 'DRAFT' === $status ? $this->client->finalizeInvoice($invoiceId) : $invoice;
+
+        return $this->invoiceInitiation($invoiceId, $finalized, $customerId);
+    }
+
+    /** @param array<string, mixed> $finalized */
+    private function invoiceInitiation(string $invoiceId, array $finalized, string $customerId): InvoiceInitiation
+    {
 
         $invoiceNumber = isset($finalized['invoiceNumber']) && is_string($finalized['invoiceNumber'])
             ? $finalized['invoiceNumber'] : null;
         $paymentId = isset($finalized['paymentId']) && is_string($finalized['paymentId'])
             ? $finalized['paymentId'] : null;
         $redirectUrl = null !== $paymentId ? $this->client->getPaymentLink($paymentId) : null;
+        $paymentMethod = null;
+        if (null !== $paymentId) {
+            $paymentMethod = $this->paymentMethodFromPayload($this->client->getPayment($paymentId));
+        }
 
         return new InvoiceInitiation(
             invoiceId: $invoiceId,
             invoiceNumber: $invoiceNumber,
             providerPaymentId: $paymentId,
             redirectUrl: $redirectUrl,
+            providerCustomerId: $customerId,
+            collectionMode: $this->collectionMode($redirectUrl, $paymentMethod),
+            providerPaymentMethod: $paymentMethod,
         );
     }
 
@@ -177,6 +232,20 @@ class PayactiveProvider implements PaymentProviderInterface, InvoiceProviderInte
         $this->client->sendPaymentReminder($providerPaymentId);
     }
 
+    public function requestPaymentMethodChange(
+        string $providerCustomerId,
+        PaymentMethodChangeDelivery $delivery = PaymentMethodChangeDelivery::EMAIL,
+    ): PaymentMethodChangeResult {
+        $url = $this->client->requestPaymentMethodChange($providerCustomerId, strtoupper($delivery->value));
+
+        return new PaymentMethodChangeResult($delivery, $url);
+    }
+
+    public function getCustomerPaymentMethods(string $providerCustomerId): array
+    {
+        return $this->client->getCustomerPaymentMethods($providerCustomerId);
+    }
+
     /**
      * Ensure the Payactive customer exists with address + vatId (ZUGFeRD needs
      * them). Creates a new customer, or updates an existing one to backfill the
@@ -191,7 +260,7 @@ class PayactiveProvider implements PaymentProviderInterface, InvoiceProviderInte
             'type' => $request->customerType,
             'paymentMethod' => $this->customerPaymentMethod(),
             'invitationType' => 'LINK',
-            'externalRef' => $request->externalReference,
+            'externalRef' => $request->customerExternalReference,
             'companyName' => $request->companyName,
             'vatId' => $request->vatId,
             'address' => [
@@ -203,7 +272,13 @@ class PayactiveProvider implements PaymentProviderInterface, InvoiceProviderInte
         ];
         $customerPayload = array_filter($customerPayload, static fn ($v) => null !== $v);
 
-        $existing = $this->client->findCustomerByEmail($request->customerEmail);
+        $existing = null;
+        if (null !== $request->providerCustomerId && '' !== $request->providerCustomerId) {
+            $existing = $this->client->getCustomer($request->providerCustomerId);
+            $existing['id'] = $request->providerCustomerId;
+        } else {
+            $existing = $this->client->findCustomerByEmail($request->customerEmail);
+        }
         $existingId = is_array($existing) && is_string($existing['id'] ?? null) ? $existing['id'] : null;
         if (null !== $existingId) {
             $customerPayload['paymentMethod'] = $this->existingCustomerPaymentMethod($existing, $existingId);
@@ -280,6 +355,10 @@ class PayactiveProvider implements PaymentProviderInterface, InvoiceProviderInte
         return new PaymentStatusSnapshot(
             status: $this->mapState($rawState),
             raw: $data,
+            collectionMode: $this->collectionMode(null, $this->paymentMethodFromPayload($data)),
+            providerPaymentMethod: $this->paymentMethodFromPayload($data),
+            amount: is_numeric($data['amount'] ?? null) ? (float) $data['amount'] : null,
+            currency: is_string($data['currency'] ?? null) ? $data['currency'] : null,
         );
     }
 
@@ -296,10 +375,36 @@ class PayactiveProvider implements PaymentProviderInterface, InvoiceProviderInte
             'VERIFIED' => PaymentStatus::SETTLED,
             'ABORTED', 'ERROR' => PaymentStatus::FAILED,
             'CANCELLED' => PaymentStatus::CANCELLED,
-            'REFUND_IN_PROGRESS', 'REFUND_COMPLETED' => PaymentStatus::REFUNDED,
-            'CHARGED_BACK' => PaymentStatus::FAILED,
+            'REFUND_IN_PROGRESS' => PaymentStatus::REFUND_PENDING,
+            'REFUND_COMPLETED' => PaymentStatus::REFUNDED,
+            'CHARGED_BACK' => PaymentStatus::CHARGED_BACK,
             '' => throw new PaymentProviderException('Payactive: payment response missing "state".'),
             default => PaymentStatus::INITIATED,
+        };
+    }
+
+    /** @param array<string, mixed> $payload */
+    private function paymentMethodFromPayload(array $payload): ?string
+    {
+        $method = $payload['paymentMethod'] ?? null;
+        if (is_array($method)) {
+            $method = $method['type'] ?? $method['name'] ?? null;
+        }
+
+        return is_string($method) && '' !== $method ? $method : null;
+    }
+
+    private function collectionMode(?string $redirectUrl, ?string $paymentMethod): CollectionMode
+    {
+        if (null !== $redirectUrl && '' !== $redirectUrl) {
+            return CollectionMode::HOSTED_ACTION;
+        }
+
+        return match (strtoupper((string) $paymentMethod)) {
+            'ONLINE_PAYMENT', 'PAPERLESS', 'CUSTOMERS_CHOICE' => CollectionMode::HOSTED_ACTION,
+            'DIRECT_DEBIT', 'SEPA_DIRECT_DEBIT', 'CREDIT_CARD', 'CARD' => CollectionMode::AUTOMATIC,
+            'MANUAL_PAYMENT', 'BANK_TRANSFER', 'TRANSFER' => CollectionMode::OFFLINE_TRANSFER,
+            default => CollectionMode::UNKNOWN,
         };
     }
 }

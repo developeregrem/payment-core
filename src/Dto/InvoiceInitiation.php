@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Fewohbee\PaymentCore\Dto;
 
+use Fewohbee\PaymentCore\Enum\CollectionMode;
+
 /**
  * Result of creating + finalizing a provider invoice.
  * `providerPaymentId` is the id of the payment that settles the invoice
@@ -16,6 +18,9 @@ final readonly class InvoiceInitiation
         public ?string $invoiceNumber,
         public ?string $providerPaymentId,
         public ?string $redirectUrl,
+        public ?string $providerCustomerId = null,
+        public CollectionMode $collectionMode = CollectionMode::UNKNOWN,
+        public ?string $providerPaymentMethod = null,
     ) {
     }
 }

@@ -17,6 +17,7 @@ use Fewohbee\PaymentCore\Provider\InvoiceProviderInterface;
 use Fewohbee\PaymentCore\Provider\PaymentProviderInterface;
 use Fewohbee\PaymentCore\Provider\PaymentProviderRegistry;
 use Fewohbee\PaymentCore\Provider\PaymentReminderProviderInterface;
+use Fewohbee\PaymentCore\Repository\PaymentTransactionRepository;
 use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
 
@@ -33,6 +34,7 @@ class InvoiceService
         private readonly PaymentProviderRegistry $providerRegistry,
         private readonly EntityManagerInterface $em,
         ?LoggerInterface $logger = null,
+        private readonly ?PaymentTransactionRepository $transactionRepository = null,
     ) {
         $this->logger = $logger ?? new NullLogger();
     }
@@ -42,9 +44,9 @@ class InvoiceService
      *
      * @throws PaymentProviderException when the active provider can't invoice
      */
-    public function createInvoice(CreateInvoiceRequest $request): InvoiceInitiation
+    public function createInvoice(CreateInvoiceRequest $request, ?string $providerId = null): InvoiceInitiation
     {
-        $provider = $this->invoiceProvider();
+        $provider = $this->invoiceProvider($providerId);
         $initiation = $provider->createInvoice($request);
 
         // The invoice is settled via its payment; poll by that payment id.
@@ -57,6 +59,25 @@ class InvoiceService
             ]);
         }
 
+        // A provider POST/finalize can succeed even if the worker loses its
+        // response or crashes before the Order stores the invoice id. On retry
+        // the adapter recovers that invoice; reuse its already committed local
+        // transaction instead of violating the provider/payment unique key.
+        $existing = $this->transactionRepository?->findOneByProviderAndProviderPaymentId(
+            $provider->getId(),
+            $providerPaymentId,
+        );
+        if ($existing instanceof PaymentTransaction) {
+            $expectedAmount = $this->grossTotal($request);
+            if ($existing->getExternalReference() !== $request->externalReference
+                || abs($existing->getAmount() - $expectedAmount) > 0.009
+                || 0 !== strcasecmp($existing->getCurrency(), $request->currency)) {
+                throw new PaymentProviderException('Recovered invoice payment conflicts with an existing local transaction.');
+            }
+
+            return $initiation;
+        }
+
         $transaction = new PaymentTransaction(
             providerId: $provider->getId(),
             providerPaymentId: $providerPaymentId,
@@ -67,10 +88,13 @@ class InvoiceService
             intent: PaymentIntent::PAYMENT,
             status: PaymentStatus::PENDING,
             kind: $request->kind,
+            collectionMode: $initiation->collectionMode,
+            providerPaymentMethod: $initiation->providerPaymentMethod,
         );
         $transaction->setMetadata(array_filter([
             'invoiceId' => $initiation->invoiceId,
             'invoiceNumber' => $initiation->invoiceNumber,
+            'providerCustomerId' => $initiation->providerCustomerId,
         ], static fn ($v) => null !== $v));
 
         $this->em->persist($transaction);
@@ -82,9 +106,9 @@ class InvoiceService
     /**
      * @throws PaymentProviderException
      */
-    public function downloadInvoice(string $invoiceId): InvoiceDocument
+    public function downloadInvoice(string $invoiceId, ?string $providerId = null): InvoiceDocument
     {
-        return $this->invoiceProvider()->downloadInvoice($invoiceId);
+        return $this->invoiceProvider($providerId)->downloadInvoice($invoiceId);
     }
 
     /**
@@ -115,9 +139,9 @@ class InvoiceService
         $provider->sendPaymentReminder($transaction->getProviderPaymentId());
     }
 
-    private function invoiceProvider(): InvoiceProviderInterface&PaymentProviderInterface
+    private function invoiceProvider(?string $providerId = null): InvoiceProviderInterface&PaymentProviderInterface
     {
-        $provider = $this->providerRegistry->getActive();
+        $provider = null === $providerId ? $this->providerRegistry->getActive() : $this->providerRegistry->get($providerId);
         if (!$provider instanceof InvoiceProviderInterface || !$provider->supports(ProviderCapability::INVOICE)) {
             throw new PaymentProviderException(sprintf(
                 'Active payment provider "%s" does not support invoicing.',

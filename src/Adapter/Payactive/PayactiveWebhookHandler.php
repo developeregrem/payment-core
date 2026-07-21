@@ -58,10 +58,6 @@ class PayactiveWebhookHandler implements WebhookHandlerInterface
             // payment.failed is offered in the Payactive portal UI even though it
             // is missing from the public docs (confirmed by the Payactive team).
             'payment.failed' => WebhookEventType::FAILED,
-            // Forward-compatible: existence of these two is not yet confirmed by
-            // Payactive. If they never fire it is harmless; if they do, we map them.
-            'payment.cancelled' => WebhookEventType::CANCELLED,
-            'payment.refunded' => WebhookEventType::REFUNDED,
             // Unknown / checkout.* events are ignored (caller responds 200).
             default => null,
         };

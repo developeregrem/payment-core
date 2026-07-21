@@ -22,6 +22,7 @@ use Fewohbee\PaymentCore\Provider\InvoiceProviderInterface;
 use Fewohbee\PaymentCore\Provider\PaymentProviderInterface;
 use Fewohbee\PaymentCore\Provider\PaymentProviderRegistry;
 use Fewohbee\PaymentCore\Provider\PaymentReminderProviderInterface;
+use Fewohbee\PaymentCore\Repository\PaymentTransactionRepository;
 use Fewohbee\PaymentCore\Service\InvoiceService;
 use PHPUnit\Framework\TestCase;
 
@@ -88,6 +89,34 @@ final class InvoiceServiceTest extends TestCase
 
         $this->expectException(PaymentProviderException::class);
         $service->createInvoice($this->request());
+    }
+
+    public function testRecoveredInvoiceReusesExistingPaymentTransaction(): void
+    {
+        $provider = $this->invoiceProvider(new InvoiceInitiation('inv-1', 'RE-1', 'pay-1', 'https://pay/inv-1'));
+        $existing = new PaymentTransaction(
+            providerId: 'payactive',
+            providerPaymentId: 'pay-1',
+            externalReference: 'order-42',
+            amount: 368.0,
+            currency: 'EUR',
+            purpose: 'FewohBee Cloud',
+            intent: PaymentIntent::PAYMENT,
+        );
+        $transactions = $this->createStub(PaymentTransactionRepository::class);
+        $transactions->method('findOneByProviderAndProviderPaymentId')->willReturn($existing);
+        $em = $this->createMock(EntityManagerInterface::class);
+        $em->expects(self::never())->method('persist');
+        $em->expects(self::never())->method('flush');
+
+        $result = (new InvoiceService(
+            new PaymentProviderRegistry([$provider], 'payactive'),
+            $em,
+            null,
+            $transactions,
+        ))->createInvoice($this->request());
+
+        self::assertSame('inv-1', $result->invoiceId);
     }
 
     public function testSendPaymentReminderUsesInvoiceTransactionProviderPaymentId(): void
