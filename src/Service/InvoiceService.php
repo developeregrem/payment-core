@@ -12,11 +12,13 @@ use Fewohbee\PaymentCore\Entity\PaymentTransaction;
 use Fewohbee\PaymentCore\Enum\PaymentIntent;
 use Fewohbee\PaymentCore\Enum\PaymentStatus;
 use Fewohbee\PaymentCore\Enum\ProviderCapability;
+use Fewohbee\PaymentCore\Exception\AmbiguousInvoiceCreationException;
 use Fewohbee\PaymentCore\Exception\PaymentProviderException;
 use Fewohbee\PaymentCore\Provider\InvoiceProviderInterface;
 use Fewohbee\PaymentCore\Provider\PaymentProviderInterface;
 use Fewohbee\PaymentCore\Provider\PaymentProviderRegistry;
 use Fewohbee\PaymentCore\Provider\PaymentReminderProviderInterface;
+use Fewohbee\PaymentCore\Provider\RecoverableInvoiceProviderInterface;
 use Fewohbee\PaymentCore\Repository\PaymentTransactionRepository;
 use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
@@ -49,6 +51,44 @@ class InvoiceService
         $provider = $this->invoiceProvider($providerId);
         $initiation = $provider->createInvoice($request);
 
+        try {
+            return $this->recordInvoiceTransaction($provider, $request, $initiation);
+        } catch (\Throwable $e) {
+            throw new AmbiguousInvoiceCreationException(
+                $initiation->invoiceId,
+                sprintf('Invoice %s exists, but its local transaction could not be recorded.', $initiation->invoiceId),
+                $e,
+            );
+        }
+    }
+
+    /** Resume one known remote invoice; this method never creates a new one. */
+    public function recoverInvoice(CreateInvoiceRequest $request, string $providerInvoiceId, ?string $providerId = null): InvoiceInitiation
+    {
+        $provider = $this->invoiceProvider($providerId);
+        if (!$provider instanceof RecoverableInvoiceProviderInterface) {
+            throw new PaymentProviderException(sprintf('Payment provider "%s" cannot recover an existing invoice.', $provider->getId()));
+        }
+
+        $initiation = $provider->recoverInvoice($request, $providerInvoiceId);
+
+        try {
+            return $this->recordInvoiceTransaction($provider, $request, $initiation);
+        } catch (\Throwable $e) {
+            throw new AmbiguousInvoiceCreationException(
+                $initiation->invoiceId,
+                sprintf('Recovered invoice %s exists, but its local transaction could not be recorded.', $initiation->invoiceId),
+                $e,
+            );
+        }
+    }
+
+    private function recordInvoiceTransaction(
+        PaymentProviderInterface $provider,
+        CreateInvoiceRequest $request,
+        InvoiceInitiation $initiation,
+    ): InvoiceInitiation
+    {
         // The invoice is settled via its payment; poll by that payment id.
         // Fall back to the invoice id only if the provider returned none
         // (degraded — flagged in the sandbox gate).

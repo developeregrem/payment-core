@@ -13,6 +13,7 @@ use Fewohbee\PaymentCore\Enum\ProviderCapability;
 use Fewohbee\PaymentCore\Enum\CollectionMode;
 use Fewohbee\PaymentCore\Enum\PaymentMethodChangeDelivery;
 use Fewohbee\PaymentCore\Enum\PaymentStatus;
+use Fewohbee\PaymentCore\Exception\AmbiguousInvoiceCreationException;
 use Fewohbee\PaymentCore\Exception\PaymentProviderException;
 use PHPUnit\Framework\TestCase;
 
@@ -205,6 +206,92 @@ final class PayactiveInvoiceTest extends TestCase
 
         self::assertSame('inv-existing', $result->invoiceId);
         self::assertSame(CollectionMode::AUTOMATIC, $result->collectionMode);
+    }
+
+    public function testCreateTimeoutIsReportedAsAmbiguousWithoutKnownInvoiceId(): void
+    {
+        $client = $this->createMock(PayactiveClient::class);
+        $client->method('findCustomerByEmail')->willReturn([
+            'id' => 'cust-1',
+            'paymentMethod' => 'ONLINE_PAYMENT',
+        ]);
+        $client->method('createInvoice')->willThrowException(new PaymentProviderException('Idle timeout'));
+
+        try {
+            (new PayactiveProvider($client, ['CUSTOMERS_CHOICE'], 'bank-1'))->createInvoice($this->request());
+            self::fail('Expected an ambiguous invoice result.');
+        } catch (AmbiguousInvoiceCreationException $e) {
+            self::assertFalse($e->canResume());
+            self::assertNull($e->providerInvoiceId);
+        }
+    }
+
+    public function testFinalizeTimeoutCarriesKnownInvoiceIdForSafeRecovery(): void
+    {
+        $client = $this->createMock(PayactiveClient::class);
+        $client->method('findCustomerByEmail')->willReturn([
+            'id' => 'cust-1',
+            'paymentMethod' => 'ONLINE_PAYMENT',
+        ]);
+        $client->method('createInvoice')->willReturn(['id' => 'inv-known']);
+        $client->method('finalizeInvoice')->willThrowException(new PaymentProviderException('Idle timeout'));
+
+        try {
+            (new PayactiveProvider($client, ['CUSTOMERS_CHOICE'], 'bank-1'))->createInvoice($this->request());
+            self::fail('Expected an ambiguous invoice result.');
+        } catch (AmbiguousInvoiceCreationException $e) {
+            self::assertTrue($e->canResume());
+            self::assertSame('inv-known', $e->providerInvoiceId);
+        }
+    }
+
+    public function testRecoversExactKnownInvoiceWithoutCreatingAnotherOne(): void
+    {
+        $client = $this->createMock(PayactiveClient::class);
+        $client->method('findCustomerByEmail')->willReturn([
+            'id' => 'cust-1',
+            'paymentMethod' => 'DIRECT_DEBIT',
+        ]);
+        $client->method('getInvoice')->with('inv-known')->willReturn([
+            'id' => 'inv-known',
+            'status' => 'OPEN',
+            'invoiceNumber' => 'RE-known',
+            'paymentId' => 'pay-known',
+            'metadata' => [
+                ['key' => 'externalReference', 'value' => 'order-42'],
+            ],
+        ]);
+        $client->expects(self::never())->method('createInvoice');
+        $client->expects(self::never())->method('finalizeInvoice');
+        $client->method('getPaymentLink')->willReturn(null);
+        $client->method('getPayment')->willReturn(['paymentMethod' => 'DIRECT_DEBIT']);
+
+        $result = (new PayactiveProvider($client, ['CUSTOMERS_CHOICE'], 'bank-1'))
+            ->recoverInvoice($this->request(), 'inv-known');
+
+        self::assertSame('inv-known', $result->invoiceId);
+        self::assertSame('RE-known', $result->invoiceNumber);
+    }
+
+    public function testRecoveryRejectsInvoiceFromAnotherOrder(): void
+    {
+        $client = $this->createMock(PayactiveClient::class);
+        $client->method('findCustomerByEmail')->willReturn([
+            'id' => 'cust-1',
+            'paymentMethod' => 'ONLINE_PAYMENT',
+        ]);
+        $client->method('getInvoice')->willReturn([
+            'id' => 'inv-foreign',
+            'status' => 'OPEN',
+            'metadata' => [
+                ['key' => 'externalReference', 'value' => 'another-order'],
+            ],
+        ]);
+        $client->expects(self::never())->method('createInvoice');
+
+        $this->expectException(PaymentProviderException::class);
+        (new PayactiveProvider($client, ['CUSTOMERS_CHOICE'], 'bank-1'))
+            ->recoverInvoice($this->request(), 'inv-foreign');
     }
 
     public function testPollingDistinguishesRefundAndChargebackReviewStates(): void

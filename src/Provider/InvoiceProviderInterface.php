@@ -7,6 +7,7 @@ namespace Fewohbee\PaymentCore\Provider;
 use Fewohbee\PaymentCore\Dto\CreateInvoiceRequest;
 use Fewohbee\PaymentCore\Dto\InvoiceDocument;
 use Fewohbee\PaymentCore\Dto\InvoiceInitiation;
+use Fewohbee\PaymentCore\Exception\AmbiguousInvoiceCreationException;
 use Fewohbee\PaymentCore\Exception\PaymentProviderException;
 
 /**
@@ -23,6 +24,12 @@ interface InvoiceProviderInterface
     /**
      * Create and finalize an invoice with the provider.
      *
+     * Once the remote create request may have reached the provider, adapters
+     * must throw AmbiguousInvoiceCreationException on failure. Include the
+     * provider invoice id whenever it is known so the host can safely recover
+     * that exact invoice; a null id tells the host to stop automatic retries.
+     *
+     * @throws AmbiguousInvoiceCreationException
      * @throws PaymentProviderException
      */
     public function createInvoice(CreateInvoiceRequest $request): InvoiceInitiation;

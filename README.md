@@ -101,6 +101,22 @@ re-detected by polling; rely on a `payment.refunded` webhook (if your account
 emits it) or handle it manually. See the integration plan for the open
 provider questions.
 
+## Invoice retry safety
+
+Invoice creation is not treated like an ordinary retryable HTTP request. A lost
+response can mean that the provider accepted the invoice even though the caller
+observed a timeout. Provider adapters therefore report such writes with
+`AmbiguousInvoiceCreationException`:
+
+- with a provider invoice id, the host persists the id and resumes that exact
+  invoice through `RecoverableInvoiceProviderInterface`;
+- without an id, the host must stop automatic creation and require an operator
+  to match the external reference at the provider first.
+
+This contract is provider-neutral and applies to future Stripe or other
+adapters as well. It prevents an infrastructure retry from becoming a second
+legally distinct invoice.
+
 ## Tests
 
 ```sh

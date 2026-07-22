@@ -17,11 +17,13 @@ use Fewohbee\PaymentCore\Entity\PaymentTransaction;
 use Fewohbee\PaymentCore\Enum\PaymentIntent;
 use Fewohbee\PaymentCore\Enum\PaymentStatus;
 use Fewohbee\PaymentCore\Enum\ProviderCapability;
+use Fewohbee\PaymentCore\Exception\AmbiguousInvoiceCreationException;
 use Fewohbee\PaymentCore\Exception\PaymentProviderException;
 use Fewohbee\PaymentCore\Provider\InvoiceProviderInterface;
 use Fewohbee\PaymentCore\Provider\PaymentProviderInterface;
 use Fewohbee\PaymentCore\Provider\PaymentProviderRegistry;
 use Fewohbee\PaymentCore\Provider\PaymentReminderProviderInterface;
+use Fewohbee\PaymentCore\Provider\RecoverableInvoiceProviderInterface;
 use Fewohbee\PaymentCore\Repository\PaymentTransactionRepository;
 use Fewohbee\PaymentCore\Service\InvoiceService;
 use PHPUnit\Framework\TestCase;
@@ -117,6 +119,64 @@ final class InvoiceServiceTest extends TestCase
         ))->createInvoice($this->request());
 
         self::assertSame('inv-1', $result->invoiceId);
+    }
+
+    public function testRecoverInvoiceDelegatesToRecoveryCapabilityWithoutCreating(): void
+    {
+        $initiation = new InvoiceInitiation('inv-known', 'RE-known', 'pay-known', null);
+        $provider = new class($initiation) implements PaymentProviderInterface, InvoiceProviderInterface, RecoverableInvoiceProviderInterface {
+            public bool $createCalled = false;
+            public ?string $recoveredId = null;
+
+            public function __construct(private readonly InvoiceInitiation $initiation)
+            {
+            }
+
+            public function getId(): string { return 'payactive'; }
+            public function supports(ProviderCapability $c): bool { return ProviderCapability::INVOICE === $c; }
+            public function createPayment(CreatePaymentRequest $r): PaymentInitiation { return new PaymentInitiation('x', null); }
+            public function fetchPaymentStatus(string $id): PaymentStatusSnapshot { return new PaymentStatusSnapshot(PaymentStatus::PENDING); }
+            public function createInvoice(CreateInvoiceRequest $r): InvoiceInitiation
+            {
+                $this->createCalled = true;
+
+                return $this->initiation;
+            }
+            public function recoverInvoice(CreateInvoiceRequest $request, string $providerInvoiceId): InvoiceInitiation
+            {
+                $this->recoveredId = $providerInvoiceId;
+
+                return $this->initiation;
+            }
+            public function downloadInvoice(string $invoiceId): InvoiceDocument { return new InvoiceDocument('f.pdf', 'application/pdf', 'x'); }
+        };
+        $em = $this->createMock(EntityManagerInterface::class);
+        $em->expects(self::once())->method('persist');
+        $em->expects(self::once())->method('flush');
+
+        $result = (new InvoiceService(new PaymentProviderRegistry([$provider], 'payactive'), $em))
+            ->recoverInvoice($this->request(), 'inv-known');
+
+        self::assertSame('inv-known', $result->invoiceId);
+        self::assertSame('inv-known', $provider->recoveredId);
+        self::assertFalse($provider->createCalled);
+    }
+
+    public function testLocalPersistenceFailureRetainsKnownRemoteInvoiceId(): void
+    {
+        $provider = $this->invoiceProvider(new InvoiceInitiation('inv-known', 'RE-known', 'pay-known', null));
+        $em = $this->createMock(EntityManagerInterface::class);
+        $em->expects(self::once())->method('persist');
+        $em->method('flush')->willThrowException(new \RuntimeException('Database unavailable'));
+
+        try {
+            (new InvoiceService(new PaymentProviderRegistry([$provider], 'payactive'), $em))
+                ->createInvoice($this->request());
+            self::fail('Expected an ambiguous local persistence result.');
+        } catch (AmbiguousInvoiceCreationException $e) {
+            self::assertTrue($e->canResume());
+            self::assertSame('inv-known', $e->providerInvoiceId);
+        }
     }
 
     public function testSendPaymentReminderUsesInvoiceTransactionProviderPaymentId(): void

@@ -16,11 +16,13 @@ use Fewohbee\PaymentCore\Enum\CollectionMode;
 use Fewohbee\PaymentCore\Enum\PaymentMethodChangeDelivery;
 use Fewohbee\PaymentCore\Enum\PaymentStatus;
 use Fewohbee\PaymentCore\Enum\ProviderCapability;
+use Fewohbee\PaymentCore\Exception\AmbiguousInvoiceCreationException;
 use Fewohbee\PaymentCore\Exception\PaymentProviderException;
 use Fewohbee\PaymentCore\Provider\InvoiceProviderInterface;
 use Fewohbee\PaymentCore\Provider\PaymentProviderInterface;
 use Fewohbee\PaymentCore\Provider\PaymentMethodManagementProviderInterface;
 use Fewohbee\PaymentCore\Provider\PaymentReminderProviderInterface;
+use Fewohbee\PaymentCore\Provider\RecoverableInvoiceProviderInterface;
 
 /**
  * Payactive adapter. Self-contained — depends only on the Core Payment module
@@ -38,7 +40,7 @@ use Fewohbee\PaymentCore\Provider\PaymentReminderProviderInterface;
  *   3) POST /invoices/{id}/actions/finalize → invoiceNumber + paymentId (ZUGFeRD)
  *   4) GET  /payments/{paymentId}/payment-link → pay-link
  */
-class PayactiveProvider implements PaymentProviderInterface, InvoiceProviderInterface, PaymentReminderProviderInterface, PaymentMethodManagementProviderInterface
+class PayactiveProvider implements PaymentProviderInterface, InvoiceProviderInterface, RecoverableInvoiceProviderInterface, PaymentReminderProviderInterface, PaymentMethodManagementProviderInterface
 {
     public const ID = 'payactive';
 
@@ -169,13 +171,85 @@ class PayactiveProvider implements PaymentProviderInterface, InvoiceProviderInte
 
         $existingInvoice = $this->client->findInvoiceByMetadata('externalReference', $request->externalReference);
         if (null !== $existingInvoice) {
-            return $this->resumeInvoice($existingInvoice, $customerId);
+            return $this->resumeInvoiceSafely($existingInvoice, $customerId);
         }
 
-        $invoiceId = $this->client->createInvoice($payload)['id'];
-        $finalized = $this->client->finalizeInvoice($invoiceId);
+        try {
+            $created = $this->client->createInvoice($payload);
+            $invoiceId = is_string($created['id'] ?? null) ? $created['id'] : '';
+            if ('' === $invoiceId) {
+                throw new \UnexpectedValueException('Payactive returned no invoice id.');
+            }
+        } catch (\Throwable $e) {
+            // POST /invoices may have succeeded before the response was lost.
+            // There is no provider id yet, so another automatic POST is unsafe.
+            throw new AmbiguousInvoiceCreationException(
+                null,
+                'Payactive: invoice creation result is ambiguous; automatic creation is blocked to prevent duplicates.',
+                $e,
+            );
+        }
 
-        return $this->invoiceInitiation($invoiceId, $finalized, $customerId);
+        try {
+            $finalized = $this->client->finalizeInvoice($invoiceId);
+
+            return $this->invoiceInitiation($invoiceId, $finalized, $customerId);
+        } catch (\Throwable $e) {
+            // The draft id is known: persist it in the caller and resume that
+            // exact invoice on retry instead of ever calling POST /invoices again.
+            throw new AmbiguousInvoiceCreationException(
+                $invoiceId,
+                sprintf('Payactive: invoice %s exists but finalization/details are incomplete; safe recovery is possible.', $invoiceId),
+                $e,
+            );
+        }
+    }
+
+    public function recoverInvoice(CreateInvoiceRequest $request, string $providerInvoiceId): InvoiceInitiation
+    {
+        $customerId = $this->ensureInvoiceCustomer($request);
+        $invoice = $this->client->getInvoice($providerInvoiceId);
+        if (!$this->hasMetadata($invoice, 'externalReference', $request->externalReference)) {
+            throw new PaymentProviderException(sprintf(
+                'Payactive: invoice %s does not belong to external reference %s.',
+                $providerInvoiceId,
+                $request->externalReference,
+            ));
+        }
+
+        return $this->resumeInvoiceSafely($invoice, $customerId);
+    }
+
+    /** @param array<string, mixed> $invoice */
+    private function resumeInvoiceSafely(array $invoice, string $customerId): InvoiceInitiation
+    {
+        $invoiceId = is_string($invoice['id'] ?? null) ? $invoice['id'] : '';
+        try {
+            return $this->resumeInvoice($invoice, $customerId);
+        } catch (\Throwable $e) {
+            throw new AmbiguousInvoiceCreationException(
+                '' !== $invoiceId ? $invoiceId : null,
+                '' !== $invoiceId
+                    ? sprintf('Payactive: invoice %s recovery is incomplete but remains safe to retry.', $invoiceId)
+                    : 'Payactive: recovered invoice has no usable id; automatic creation is blocked.',
+                $e,
+            );
+        }
+    }
+
+    /** @param array<string, mixed> $invoice */
+    private function hasMetadata(array $invoice, string $key, string $value): bool
+    {
+        foreach (is_array($invoice['metadata'] ?? null) ? $invoice['metadata'] : [] as $metadata) {
+            if (is_array($metadata)
+                && ($metadata['key'] ?? null) === $key
+                && (string) ($metadata['value'] ?? '') === $value
+            ) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /** @param array<string, mixed> $invoice */
