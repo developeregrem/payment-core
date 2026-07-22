@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Fewohbee\PaymentCore\Adapter\Payactive;
 
 use Fewohbee\PaymentCore\Exception\PaymentProviderException;
+use Fewohbee\PaymentCore\Exception\PaymentProviderTransportException;
 use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
 use Symfony\Contracts\HttpClient\Exception\ExceptionInterface;
@@ -196,7 +197,10 @@ class PayactiveClient
         $path = '/customers/'.rawurlencode($customerId).'/actions/change-payment-method?'.http_build_query([
             'invitationType' => $invitationType,
         ]);
-        $value = $this->requestValue('PATCH', $path);
+        // The OpenAPI contract declares */* with a scalar string. Depending on
+        // the Payactive deployment this is returned either as a JSON string or
+        // as plain text, so this endpoint must explicitly support both forms.
+        $value = $this->requestValue('PATCH', $path, acceptPlainText: true);
 
         return is_string($value) && '' !== trim($value) ? $value : null;
     }
@@ -312,7 +316,12 @@ class PayactiveClient
      *
      * @return array<mixed>|string|int|float|bool|null
      */
-    private function requestValue(string $method, string $path, ?array $body = null): array|string|int|float|bool|null
+    private function requestValue(
+        string $method,
+        string $path,
+        ?array $body = null,
+        bool $acceptPlainText = false,
+    ): array|string|int|float|bool|null
     {
         if ('' === $this->apiKey) {
             throw new PaymentProviderException('Payactive: PAYACTIVE_API_KEY is not configured.');
@@ -338,7 +347,7 @@ class PayactiveClient
                 'path' => $path,
                 'error' => $e->getMessage(),
             ]);
-            throw new PaymentProviderException(sprintf('Payactive: transport error on %s %s: %s', $method, $path, $e->getMessage()), 0, $e);
+            throw new PaymentProviderTransportException(sprintf('Payactive: transport error on %s %s: %s', $method, $path, $e->getMessage()), 0, $e);
         }
 
         if ($status >= 400) {
@@ -353,13 +362,24 @@ class PayactiveClient
         }
 
         try {
-            // A successful PUT/PATCH/DELETE may return an empty body (204/200) —
-            // not an error, just nothing to decode.
-            if ('' === trim($response->getContent(false))) {
-                return [];
+            $content = trim($response->getContent(false));
+        } catch (ExceptionInterface $e) {
+            throw new PaymentProviderTransportException(sprintf('Payactive: transport error while reading %s %s: %s', $method, $path, $e->getMessage()), 0, $e);
+        }
+
+        // A successful PUT/PATCH/DELETE may return an empty body (204/200) —
+        // not an error, just nothing to decode.
+        if ('' === $content) {
+            return [];
+        }
+
+        try {
+            $data = json_decode($content, true, 512, JSON_THROW_ON_ERROR);
+        } catch (\JsonException $e) {
+            if ($acceptPlainText) {
+                return $content;
             }
-            $data = json_decode(trim($response->getContent(false)), true, 512, JSON_THROW_ON_ERROR);
-        } catch (ExceptionInterface|\JsonException $e) {
+
             throw new PaymentProviderException(sprintf('Payactive: invalid JSON on %s %s: %s', $method, $path, $e->getMessage()), 0, $e);
         }
 
@@ -390,7 +410,7 @@ class PayactiveClient
             $content = $response->getContent();
             $contentType = $response->getHeaders()['content-type'][0] ?? 'application/octet-stream';
         } catch (ExceptionInterface $e) {
-            throw new PaymentProviderException(sprintf('Payactive: transport error on %s %s: %s', $method, $path, $e->getMessage()), 0, $e);
+            throw new PaymentProviderTransportException(sprintf('Payactive: transport error on %s %s: %s', $method, $path, $e->getMessage()), 0, $e);
         }
 
         if (str_starts_with(ltrim($content), '{')) {

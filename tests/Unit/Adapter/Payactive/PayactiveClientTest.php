@@ -84,4 +84,36 @@ final class PayactiveClientTest extends TestCase
 
         self::assertSame('https://pay.example/change/abc', $client->requestPaymentMethodChange('cust-1', 'EMAIL'));
     }
+
+    public function testPaymentMethodChangeAcceptsPlainTextResponse(): void
+    {
+        $response = $this->createMock(ResponseInterface::class);
+        $response->method('getStatusCode')->willReturn(200);
+        $response->expects(self::once())->method('getContent')->with(false)->willReturn('https://pay.example/change/plain');
+
+        $http = $this->createMock(HttpClientInterface::class);
+        $http->expects(self::once())->method('request')->with(
+            'PATCH',
+            'https://pay.example/customers/cust-1/actions/change-payment-method?invitationType=EMAIL',
+            self::isType('array'),
+        )->willReturn($response);
+
+        $client = new PayactiveClient($http, 'api-key', 'https://pay.example');
+
+        self::assertSame('https://pay.example/change/plain', $client->requestPaymentMethodChange('cust-1', 'EMAIL'));
+    }
+
+    public function testPaymentMethodChangeAcceptsEmptySuccessfulResponse(): void
+    {
+        $response = $this->createMock(ResponseInterface::class);
+        $response->method('getStatusCode')->willReturn(204);
+        $response->expects(self::once())->method('getContent')->with(false)->willReturn('');
+
+        $http = $this->createMock(HttpClientInterface::class);
+        $http->method('request')->willReturn($response);
+
+        $client = new PayactiveClient($http, 'api-key', 'https://pay.example');
+
+        self::assertNull($client->requestPaymentMethodChange('cust-1', 'EMAIL'));
+    }
 }
