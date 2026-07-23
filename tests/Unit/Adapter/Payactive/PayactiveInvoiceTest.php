@@ -57,6 +57,7 @@ final class PayactiveInvoiceTest extends TestCase
             ->with(self::callback(function (array $payload): bool {
                 self::assertSame('cust-1', $payload['customerId']);
                 self::assertSame('bank-1', $payload['creditorBankAccountId']);
+                self::assertSame(['ONLINE_PAYMENT', 'CREDIT_CARD'], $payload['allowedPaymentMethods']);
                 self::assertTrue($payload['grossInvoice']);
                 self::assertCount(2, $payload['positions']);
                 self::assertSame('Plan small (jährlich)', $payload['positions'][0]['description']);
@@ -101,25 +102,59 @@ final class PayactiveInvoiceTest extends TestCase
         $client->method('findCustomerByEmail')->willReturn([
             'id' => 'cust-existing',
             'emailAddress' => 'kunde@example.com',
-            'paymentMethod' => 'MANUAL_PAYMENT',
+            'paymentMethod' => 'DIRECT_DEBIT',
         ]);
         $client->expects(self::never())->method('createCustomer');
         $client->expects(self::once())
             ->method('updateCustomer')
             ->with('cust-existing', self::callback(static function (array $payload): bool {
-                self::assertSame('MANUAL_PAYMENT', $payload['paymentMethod']);
+                self::assertSame('DIRECT_DEBIT', $payload['paymentMethod']);
 
                 return true;
             }));
-        $client->method('createInvoice')->willReturn(['id' => 'inv-2']);
+        $client->method('createInvoice')->with(self::callback(static function (array $payload): bool {
+            self::assertSame(['ONLINE_PAYMENT', 'CREDIT_CARD'], $payload['allowedPaymentMethods']);
+            self::assertNotContains('DIRECT_DEBIT', $payload['allowedPaymentMethods']);
+
+            return true;
+        }))->willReturn(['id' => 'inv-2']);
         $client->method('finalizeInvoice')->willReturn(['invoiceNumber' => 'RE-2', 'paymentId' => 'pay-2']);
-        $client->method('getPaymentLink')->willReturn('https://pay.example/inv-2');
-        $client->method('getPayment')->willReturn(['paymentMethod' => 'MANUAL_PAYMENT']);
+        $client->method('getPaymentLink')->willReturn(null);
+        $client->method('getPayment')->willReturn(['paymentMethod' => 'DIRECT_DEBIT']);
 
         $provider = new PayactiveProvider($client, ['CUSTOMERS_CHOICE'], 'bank-1');
         $result = $provider->createInvoice($this->request());
 
         self::assertSame('inv-2', $result->invoiceId);
+        self::assertSame(CollectionMode::AUTOMATIC, $result->collectionMode);
+    }
+
+    public function testCreateInvoiceUsesConfiguredAllowedPaymentMethods(): void
+    {
+        $client = $this->createMock(PayactiveClient::class);
+        $client->method('findCustomerByEmail')->willReturn([
+            'id' => 'cust-existing',
+            'emailAddress' => 'kunde@example.com',
+            'paymentMethod' => 'ONLINE_PAYMENT',
+        ]);
+        $client->expects(self::once())->method('createInvoice')->with(self::callback(static function (array $payload): bool {
+            self::assertSame(['CREDIT_CARD', 'ONLINE_PAYMENT'], $payload['allowedPaymentMethods']);
+
+            return true;
+        }))->willReturn(['id' => 'inv-configured']);
+        $client->method('finalizeInvoice')->willReturn(['invoiceNumber' => 'RE-3', 'paymentId' => 'pay-3']);
+        $client->method('getPaymentLink')->willReturn('https://pay.example/inv-configured');
+        $client->method('getPayment')->willReturn(['paymentMethod' => 'CREDIT_CARD']);
+
+        $provider = new PayactiveProvider(
+            $client,
+            ['CUSTOMERS_CHOICE'],
+            'bank-1',
+            'ONLINE_PAYMENT',
+            ['credit_card', 'ONLINE_PAYMENT', 'credit_card', ''],
+        );
+
+        $provider->createInvoice($this->request());
     }
 
     public function testCreateInvoiceThrowsWithoutCreditor(): void

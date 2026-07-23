@@ -26,6 +26,7 @@ use Symfony\Component\HttpKernel\Bundle\AbstractBundle;
  *           api_key:        '%env(PAYACTIVE_API_KEY)%'
  *           base_url:       '%env(PAYACTIVE_API_BASE_URL)%'
  *           webhook_secret: '%env(PAYACTIVE_WEBHOOK_SECRET)%'
+ *           invoice_payment_methods: ['ONLINE_PAYMENT', 'CREDIT_CARD']
  */
 class PaymentCoreBundle extends AbstractBundle
 {
@@ -52,6 +53,15 @@ class PaymentCoreBundle extends AbstractBundle
                             ->defaultValue(['CUSTOMERS_CHOICE'])
                             ->info('Methods offered on POST /payments (payment-first). CUSTOMERS_CHOICE is valid here and lets the payer pick.')
                         ->end()
+                        ->variableNode('invoice_payment_methods')
+                            ->defaultValue(['ONLINE_PAYMENT', 'CREDIT_CARD'])
+                            ->info('Methods offered by invoice payment flows. Existing direct-debit mandates take precedence at Payactive.')
+                            ->validate()
+                                ->ifTrue(static fn (mixed $value): bool => !is_array($value)
+                                    && !(is_string($value) && str_starts_with($value, '%env(') && str_ends_with($value, ')%')))
+                                ->thenInvalid('Expected a list of payment methods or a Symfony env placeholder.')
+                            ->end()
+                        ->end()
                         ->scalarNode('customer_payment_method')
                             ->defaultValue('ONLINE_PAYMENT')
                             ->info('Concrete method stored on the customer (ONLINE_PAYMENT|MANUAL_PAYMENT|DIRECT_DEBIT|PAPERLESS). NOT CUSTOMERS_CHOICE. Determines an invoice-first payment\'s method.')
@@ -62,7 +72,7 @@ class PaymentCoreBundle extends AbstractBundle
     }
 
     /**
-     * @param array{active_provider: string, payactive: array{api_key: string, base_url: string, webhook_secret: string, creditor_bank_account_id: ?string, payment_methods: list<string>, customer_payment_method: string}} $config
+     * @param array{active_provider: string, payactive: array{api_key: string, base_url: string, webhook_secret: string, creditor_bank_account_id: ?string, payment_methods: list<string>, invoice_payment_methods: list<string>|string, customer_payment_method: string}} $config
      */
     public function loadExtension(array $config, ContainerConfigurator $container, ContainerBuilder $builder): void
     {
@@ -73,6 +83,7 @@ class PaymentCoreBundle extends AbstractBundle
             ->set('payment_core.payactive.webhook_secret', $config['payactive']['webhook_secret'])
             ->set('payment_core.payactive.creditor_bank_account_id', $config['payactive']['creditor_bank_account_id'])
             ->set('payment_core.payactive.payment_methods', $config['payactive']['payment_methods'])
+            ->set('payment_core.payactive.invoice_payment_methods', $config['payactive']['invoice_payment_methods'])
             ->set('payment_core.payactive.customer_payment_method', $config['payactive']['customer_payment_method']);
 
         $container->import(\dirname(__DIR__).'/config/services.php');

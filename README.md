@@ -55,13 +55,15 @@ composer require fewohbee/payment-core
    mapping for `PaymentTransaction`. No service copy-paste, no `doctrine.yaml`
    mapping entry required.
 
-2. **Env vars** (the bundle config defaults to these):
+2. **Env vars** (provider connection settings default to these; the invoice
+   allowlist is mapped in the config example below):
 
    ```dotenv
    PAYMENT_PROVIDER=payactive
    PAYACTIVE_API_BASE_URL=https://api.sandbox.payactive.app
    PAYACTIVE_API_KEY=...
    PAYACTIVE_WEBHOOK_SECRET=...
+   PAYACTIVE_INVOICE_PAYMENT_METHODS=ONLINE_PAYMENT,CREDIT_CARD
    ```
 
    To override without env vars, add `config/packages/payment_core.yaml`:
@@ -73,7 +75,14 @@ composer require fewohbee/payment-core
            api_key: '%env(PAYACTIVE_API_KEY)%'
            base_url: '%env(PAYACTIVE_API_BASE_URL)%'
            webhook_secret: '%env(PAYACTIVE_WEBHOOK_SECRET)%'
+           invoice_payment_methods: '%env(csv:PAYACTIVE_INVOICE_PAYMENT_METHODS)%'
    ```
+
+   `invoice_payment_methods` is an explicit allowlist sent as
+   `allowedPaymentMethods` when creating an invoice. An existing Payactive
+   direct-debit mandate takes precedence independently of this list. Keeping
+   this setting explicit avoids an additional availability dependency on the
+   provider's payment-settings endpoint for every invoice.
 
 3. **Generate a migration** in the host app (`doctrine:migrations:diff`) — the
    `payment_transactions` table lives in the host app's schema. The package does

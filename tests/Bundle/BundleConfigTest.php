@@ -22,10 +22,11 @@ use Symfony\Component\DependencyInjection\ContainerBuilder;
  */
 final class BundleConfigTest extends TestCase
 {
-    private function loadContainer(): ContainerBuilder
+    /** @param list<array<string, mixed>> $configs */
+    private function loadContainer(array $configs = []): ContainerBuilder
     {
         $container = new ContainerBuilder();
-        (new PaymentCoreBundle())->getContainerExtension()->load([], $container);
+        (new PaymentCoreBundle())->getContainerExtension()->load($configs, $container);
 
         return $container;
     }
@@ -54,6 +55,10 @@ final class BundleConfigTest extends TestCase
         self::assertSame('%env(PAYACTIVE_API_KEY)%', $container->getParameter('payment_core.payactive.api_key'));
         self::assertSame('%env(PAYACTIVE_API_BASE_URL)%', $container->getParameter('payment_core.payactive.base_url'));
         self::assertSame('%env(PAYACTIVE_WEBHOOK_SECRET)%', $container->getParameter('payment_core.payactive.webhook_secret'));
+        self::assertSame(
+            ['ONLINE_PAYMENT', 'CREDIT_CARD'],
+            $container->getParameter('payment_core.payactive.invoice_payment_methods'),
+        );
     }
 
     public function testProviderRegistryWiring(): void
@@ -66,6 +71,30 @@ final class BundleConfigTest extends TestCase
         self::assertSame('app.payment.provider', $providers->getTag());
 
         self::assertSame('%payment_core.active_provider%', $def->getArgument('$activeProviderId'));
+    }
+
+    public function testInvoicePaymentMethodsAreWiredToProvider(): void
+    {
+        $container = $this->loadContainer();
+
+        self::assertSame(
+            '%payment_core.payactive.invoice_payment_methods%',
+            $container->getDefinition(PayactiveProvider::class)->getArgument('$invoicePaymentMethods'),
+        );
+    }
+
+    public function testInvoicePaymentMethodsAcceptCsvEnvironmentProcessor(): void
+    {
+        $container = $this->loadContainer([[
+            'payactive' => [
+                'invoice_payment_methods' => '%env(csv:PAYACTIVE_INVOICE_PAYMENT_METHODS)%',
+            ],
+        ]]);
+
+        self::assertSame(
+            '%env(csv:PAYACTIVE_INVOICE_PAYMENT_METHODS)%',
+            $container->getParameter('payment_core.payactive.invoice_payment_methods'),
+        );
     }
 
     public function testInstanceofConditionalsTagImplementations(): void

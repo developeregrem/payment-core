@@ -53,12 +53,16 @@ class PayactiveProvider implements PaymentProviderInterface, InvoiceProviderInte
      *   CUSTOMERS_CHOICE is NOT accepted by Payactive on the customer, so it
      *   must be a concrete method. This is what an invoice-first payment uses,
      *   since invoices have no per-request payment method.
+     * @param list<string> $invoicePaymentMethods Methods offered by an invoice
+     *   payment flow. Payactive still gives an existing direct-debit mandate
+     *   precedence even when DIRECT_DEBIT is not included here.
      */
     public function __construct(
         private readonly PayactiveClient $client,
         private readonly array $paymentMethods = ['CUSTOMERS_CHOICE'],
         private readonly ?string $creditorBankAccountId = null,
         private readonly string $customerPaymentMethod = 'ONLINE_PAYMENT',
+        private readonly array $invoicePaymentMethods = ['ONLINE_PAYMENT', 'CREDIT_CARD'],
     ) {
     }
 
@@ -132,6 +136,10 @@ class PayactiveProvider implements PaymentProviderInterface, InvoiceProviderInte
             'grossInvoice' => $request->grossInvoice,
             'reverseCharge' => $request->reverseCharge,
         ];
+        $invoicePaymentMethods = $this->invoicePaymentMethods();
+        if ([] !== $invoicePaymentMethods) {
+            $payload['allowedPaymentMethods'] = $invoicePaymentMethods;
+        }
         // This first value is the provider-side idempotency/recovery key and
         // cannot be replaced by optional caller metadata (array union semantics).
         $invoiceMetadata = ['externalReference' => $request->externalReference] + $request->metadata;
@@ -419,6 +427,17 @@ class PayactiveProvider implements PaymentProviderInterface, InvoiceProviderInte
     private function customerPaymentMethod(): string
     {
         return $this->customerPaymentMethod;
+    }
+
+    /** @return list<string> */
+    private function invoicePaymentMethods(): array
+    {
+        $methods = array_map(
+            static fn (mixed $method): string => strtoupper(trim((string) $method)),
+            $this->invoicePaymentMethods,
+        );
+
+        return array_values(array_unique(array_filter($methods, static fn (string $method): bool => '' !== $method)));
     }
 
     public function fetchPaymentStatus(string $providerPaymentId): PaymentStatusSnapshot
