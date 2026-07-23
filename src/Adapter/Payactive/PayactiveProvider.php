@@ -217,10 +217,11 @@ class PayactiveProvider implements PaymentProviderInterface, InvoiceProviderInte
     {
         $customerId = $this->ensureInvoiceCustomer($request);
         $invoice = $this->client->getInvoice($providerInvoiceId);
-        if (!$this->hasMetadata($invoice, 'externalReference', $request->externalReference)) {
+        if (!$this->invoiceBelongsToRequest($invoice, $customerId, $request->externalReference)) {
             throw new PaymentProviderException(sprintf(
-                'Payactive: invoice %s does not belong to external reference %s.',
+                'Payactive: invoice %s does not belong to customer %s and external reference %s.',
                 $providerInvoiceId,
+                $customerId,
                 $request->externalReference,
             ));
         }
@@ -246,18 +247,42 @@ class PayactiveProvider implements PaymentProviderInterface, InvoiceProviderInte
     }
 
     /** @param array<string, mixed> $invoice */
-    private function hasMetadata(array $invoice, string $key, string $value): bool
+    private function invoiceBelongsToRequest(array $invoice, string $customerId, string $externalReference): bool
+    {
+        $invoiceCustomerId = $invoice['customerId'] ?? $invoice['debitorId'] ?? null;
+        if (!is_string($invoiceCustomerId) || '' === $invoiceCustomerId) {
+            $customer = $invoice['customer'] ?? $invoice['debitor'] ?? null;
+            $invoiceCustomerId = is_array($customer) ? ($customer['id'] ?? null) : null;
+        }
+
+        $metadataReference = $this->metadataValue($invoice, 'externalReference');
+
+        // Payactive currently omits metadata from GET /invoices/{id}, although
+        // it accepted the values during creation. The exact persisted invoice
+        // id plus the provider customer id are therefore the reliable recovery
+        // anchor. When metadata is returned, use it as an additional guard.
+        if (is_string($invoiceCustomerId) && '' !== $invoiceCustomerId) {
+            return $invoiceCustomerId === $customerId
+                && (null === $metadataReference || $metadataReference === $externalReference);
+        }
+
+        // Backwards-compatible fallback for providers/responses without a
+        // customer id: only an exact external reference is acceptable.
+        return $metadataReference === $externalReference;
+    }
+
+    /** @param array<string, mixed> $invoice */
+    private function metadataValue(array $invoice, string $key): ?string
     {
         foreach (is_array($invoice['metadata'] ?? null) ? $invoice['metadata'] : [] as $metadata) {
-            if (is_array($metadata)
-                && ($metadata['key'] ?? null) === $key
-                && (string) ($metadata['value'] ?? '') === $value
-            ) {
-                return true;
+            if (is_array($metadata) && ($metadata['key'] ?? null) === $key) {
+                $value = $metadata['value'] ?? null;
+
+                return is_scalar($value) ? (string) $value : null;
             }
         }
 
-        return false;
+        return null;
     }
 
     /** @param array<string, mixed> $invoice */
@@ -276,15 +301,25 @@ class PayactiveProvider implements PaymentProviderInterface, InvoiceProviderInte
     /** @param array<string, mixed> $finalized */
     private function invoiceInitiation(string $invoiceId, array $finalized, string $customerId): InvoiceInitiation
     {
-
         $invoiceNumber = isset($finalized['invoiceNumber']) && is_string($finalized['invoiceNumber'])
             ? $finalized['invoiceNumber'] : null;
         $paymentId = isset($finalized['paymentId']) && is_string($finalized['paymentId'])
             ? $finalized['paymentId'] : null;
         $redirectUrl = null !== $paymentId ? $this->client->getPaymentLink($paymentId) : null;
         $paymentMethod = null;
-        if (null !== $paymentId) {
+        if (null !== $paymentId && null === $redirectUrl) {
+            // Only needed to distinguish automatic collection/transfer when no
+            // hosted link exists. If this lookup is temporarily unavailable,
+            // recovery must retry the known invoice rather than persist a hosted
+            // payment without its required link.
             $paymentMethod = $this->paymentMethodFromPayload($this->client->getPayment($paymentId));
+            $collectionMode = $this->collectionMode(null, $paymentMethod);
+            if (CollectionMode::HOSTED_ACTION === $collectionMode || CollectionMode::UNKNOWN === $collectionMode) {
+                throw new PaymentProviderException(sprintf(
+                    'Payactive: payment %s requires a hosted action but its payment link is not available yet.',
+                    $paymentId,
+                ));
+            }
         }
 
         return new InvoiceInitiation(

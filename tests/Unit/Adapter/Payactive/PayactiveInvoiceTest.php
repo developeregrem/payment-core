@@ -82,7 +82,7 @@ final class PayactiveInvoiceTest extends TestCase
             ->method('getPaymentLink')
             ->with('pay-1')
             ->willReturn('https://pay.example/inv-1');
-        $client->method('getPayment')->with('pay-1')->willReturn(['paymentMethod' => 'ONLINE_PAYMENT']);
+        $client->expects(self::never())->method('getPayment');
 
         $provider = new PayactiveProvider($client, ['CUSTOMERS_CHOICE'], 'bank-1');
 
@@ -207,6 +207,27 @@ final class PayactiveInvoiceTest extends TestCase
         self::assertSame('DIRECT_DEBIT', $result->providerPaymentMethod);
     }
 
+    public function testHostedInvoiceWithoutAvailableLinkRetriesKnownInvoice(): void
+    {
+        $client = $this->createMock(PayactiveClient::class);
+        $client->method('findCustomerByEmail')->willReturn([
+            'id' => 'cust-1',
+            'paymentMethod' => 'ONLINE_PAYMENT',
+        ]);
+        $client->method('createInvoice')->willReturn(['id' => 'inv-hosted']);
+        $client->method('finalizeInvoice')->willReturn(['invoiceNumber' => 'RE-hosted', 'paymentId' => 'pay-hosted']);
+        $client->method('getPaymentLink')->willReturn(null);
+        $client->method('getPayment')->willReturn(['paymentMethod' => 'CUSTOMERS_CHOICE']);
+
+        try {
+            (new PayactiveProvider($client, ['CUSTOMERS_CHOICE'], 'bank-1'))->createInvoice($this->request());
+            self::fail('Expected the known invoice to remain recoverable until its hosted link is available.');
+        } catch (AmbiguousInvoiceCreationException $e) {
+            self::assertTrue($e->canResume());
+            self::assertSame('inv-hosted', $e->providerInvoiceId);
+        }
+    }
+
     public function testRequestsProviderManagedPaymentMethodChangeByEmail(): void
     {
         $client = $this->createMock(PayactiveClient::class);
@@ -292,9 +313,8 @@ final class PayactiveInvoiceTest extends TestCase
             'status' => 'OPEN',
             'invoiceNumber' => 'RE-known',
             'paymentId' => 'pay-known',
-            'metadata' => [
-                ['key' => 'externalReference', 'value' => 'order-42'],
-            ],
+            'customerId' => 'cust-1',
+            'metadata' => null,
         ]);
         $client->expects(self::never())->method('createInvoice');
         $client->expects(self::never())->method('finalizeInvoice');
@@ -318,9 +338,30 @@ final class PayactiveInvoiceTest extends TestCase
         $client->method('getInvoice')->willReturn([
             'id' => 'inv-foreign',
             'status' => 'OPEN',
+            'customerId' => 'cust-1',
             'metadata' => [
                 ['key' => 'externalReference', 'value' => 'another-order'],
             ],
+        ]);
+        $client->expects(self::never())->method('createInvoice');
+
+        $this->expectException(PaymentProviderException::class);
+        (new PayactiveProvider($client, ['CUSTOMERS_CHOICE'], 'bank-1'))
+            ->recoverInvoice($this->request(), 'inv-foreign');
+    }
+
+    public function testRecoveryRejectsInvoiceFromAnotherCustomerWithoutMetadata(): void
+    {
+        $client = $this->createMock(PayactiveClient::class);
+        $client->method('findCustomerByEmail')->willReturn([
+            'id' => 'cust-1',
+            'paymentMethod' => 'ONLINE_PAYMENT',
+        ]);
+        $client->method('getInvoice')->willReturn([
+            'id' => 'inv-foreign',
+            'status' => 'OPEN',
+            'customerId' => 'cust-other',
+            'metadata' => null,
         ]);
         $client->expects(self::never())->method('createInvoice');
 

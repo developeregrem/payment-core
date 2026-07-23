@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Fewohbee\PaymentCore\Adapter\Payactive;
 
 use Fewohbee\PaymentCore\Exception\PaymentProviderException;
+use Fewohbee\PaymentCore\Exception\PaymentProviderHttpException;
 use Fewohbee\PaymentCore\Exception\PaymentProviderTransportException;
 use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
@@ -68,9 +69,13 @@ class PayactiveClient
     public function getPaymentLink(string $paymentId): ?string
     {
         try {
-            $data = $this->requestJson('GET', '/payments/'.rawurlencode($paymentId).'/payment-link');
-        } catch (PaymentProviderException $e) {
-            if (str_contains($e->getMessage(), 'HTTP 404')) {
+            $data = $this->requestJson(
+                'GET',
+                '/payments/'.rawurlencode($paymentId).'/payment-link',
+                quietHttpStatuses: [404],
+            );
+        } catch (PaymentProviderHttpException $e) {
+            if (404 === $e->statusCode) {
                 return null;
             }
 
@@ -296,12 +301,18 @@ class PayactiveClient
 
     /**
      * @param array<string, mixed>|null $body
+     * @param list<int>                 $quietHttpStatuses
      *
      * @return array<string, mixed>
      */
-    private function requestJson(string $method, string $path, ?array $body = null): array
+    private function requestJson(
+        string $method,
+        string $path,
+        ?array $body = null,
+        array $quietHttpStatuses = [],
+    ): array
     {
-        $value = $this->requestValue($method, $path, $body);
+        $value = $this->requestValue($method, $path, $body, quietHttpStatuses: $quietHttpStatuses);
         if (!is_array($value)) {
             throw new PaymentProviderException(sprintf('Payactive: expected JSON object or array on %s %s.', $method, $path));
         }
@@ -313,6 +324,7 @@ class PayactiveClient
      * Payactive has successful JSON endpoints returning a scalar string.
      *
      * @param array<string, mixed>|null $body
+     * @param list<int>                 $quietHttpStatuses Expected endpoint-specific statuses which callers handle
      *
      * @return array<mixed>|string|int|float|bool|null
      */
@@ -321,6 +333,7 @@ class PayactiveClient
         string $path,
         ?array $body = null,
         bool $acceptPlainText = false,
+        array $quietHttpStatuses = [],
     ): array|string|int|float|bool|null
     {
         if ('' === $this->apiKey) {
@@ -352,13 +365,18 @@ class PayactiveClient
 
         if ($status >= 400) {
             $bodyText = $this->safeBody($response);
-            $this->logger->warning('Payactive HTTP error', [
-                'method' => $method,
-                'path' => $path,
-                'status' => $status,
-                'body' => $bodyText,
-            ]);
-            throw new PaymentProviderException(sprintf('Payactive: HTTP %d on %s %s. Body: %s', $status, $method, $path, $bodyText));
+            if (!in_array($status, $quietHttpStatuses, true)) {
+                $this->logger->warning('Payactive HTTP error', [
+                    'method' => $method,
+                    'path' => $path,
+                    'status' => $status,
+                    'body' => $bodyText,
+                ]);
+            }
+            throw new PaymentProviderHttpException(
+                $status,
+                sprintf('Payactive: HTTP %d on %s %s. Body: %s', $status, $method, $path, $bodyText),
+            );
         }
 
         try {

@@ -7,6 +7,7 @@ namespace Fewohbee\PaymentCore\Tests\Unit\Adapter\Payactive;
 use Fewohbee\PaymentCore\Adapter\Payactive\PayactiveClient;
 use Fewohbee\PaymentCore\Exception\PaymentProviderException;
 use PHPUnit\Framework\TestCase;
+use Psr\Log\LoggerInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 use Symfony\Contracts\HttpClient\ResponseInterface;
 
@@ -46,8 +47,10 @@ final class PayactiveClientTest extends TestCase
 
         $http = $this->createMock(HttpClientInterface::class);
         $http->method('request')->willReturn($response);
+        $logger = $this->createMock(LoggerInterface::class);
+        $logger->expects(self::never())->method('warning');
 
-        $client = new PayactiveClient($http, 'api-key', 'https://pay.example');
+        $client = new PayactiveClient($http, 'api-key', 'https://pay.example', $logger);
 
         self::assertNull($client->getPaymentLink('pay-1'));
     }
