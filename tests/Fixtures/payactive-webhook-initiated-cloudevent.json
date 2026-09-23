@@ -1,0 +1,30 @@
+{
+    "id": "8eb9677d-e75e-462b-9a75-f8c5c36f1b7f",
+    "data": {
+        "amount": 78,
+        "status": "INITIATED",
+        "purpose": "RE-0926-0002",
+        "metadata": [
+            {
+                "key": "externalReference",
+                "value": "2",
+                "publicVisible": false
+            },
+            {
+                "key": "portalOrderId",
+                "value": "2",
+                "publicVisible": false
+            }
+        ],
+        "tenantId": "087b3215eb0eda8212e533e3",
+        "paymentId": "90723141-f547-4ca0-8d34-7452a107f8a1",
+        "correlationId": "c16b47c3-450a-4877-a49b-ebbcf9de9f84",
+        "paymentMethod": "ONLINE_PAYMENT"
+    },
+    "time": "2026-09-23T14:52:38.451330208Z",
+    "type": "payments.payment.initiated",
+    "source": "urn:payments",
+    "tenantid": "087b3215eb0eda8212e533e3",
+    "specversion": "1.0",
+    "datacontenttype": "application/json"
+}

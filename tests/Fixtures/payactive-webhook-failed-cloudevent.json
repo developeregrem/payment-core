@@ -1,0 +1,25 @@
+{
+    "id": "a1c3bf1d-cb4a-4246-8097-78c081e3ca70",
+    "data": {
+        "amount": 47.6,
+        "status": "FAILED",
+        "purpose": "RE-0926-0002",
+        "metadata": [
+            {
+                "key": "externalReference",
+                "value": "2",
+                "publicVisible": false
+            }
+        ],
+        "tenantId": "087b3215eb0eda8212e533e3",
+        "paymentId": "d6d8d863-d46c-4044-9ff3-68cd67142abd",
+        "correlationId": "c16b47c3-450a-4877-a49b-ebbcf9de9f84",
+        "paymentMethod": "ONLINE_PAYMENT"
+    },
+    "time": "2026-09-23T14:53:12.831167652Z",
+    "type": "payments.payment.failed",
+    "source": "urn:payments",
+    "tenantid": "087b3215eb0eda8212e533e3",
+    "specversion": "1.0",
+    "datacontenttype": "application/json"
+}

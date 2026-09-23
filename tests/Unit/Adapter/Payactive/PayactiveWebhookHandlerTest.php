@@ -62,6 +62,50 @@ final class PayactiveWebhookHandlerTest extends TestCase
         (new PayactiveWebhookHandler(''))->handle($this->makeRequest('{}', 'doesnt-matter'));
     }
 
+    public function testValidSignatureReturnsNormalizedSettledEventFromCloudEventEnvelope(): void
+    {
+        $body = (string) file_get_contents(self::FIXTURE_DIR.'/payactive-webhook-settled-cloudevent.json');
+
+        $event = (new PayactiveWebhookHandler(self::SECRET))
+            ->handle($this->makeRequest($body, $this->sign($body)));
+
+        self::assertNotNull($event);
+        self::assertSame(WebhookEventType::SETTLED, $event->type);
+        self::assertSame('d6d8d863-d46c-4044-9ff3-68cd67142abd', $event->providerPaymentId);
+        self::assertSame(47.6, $event->amount);
+    }
+
+    public function testPaymentInitiatedIsMappedFromCloudEventEnvelope(): void
+    {
+        $body = (string) file_get_contents(self::FIXTURE_DIR.'/payactive-webhook-initiated-cloudevent.json');
+
+        $event = (new PayactiveWebhookHandler(self::SECRET))
+            ->handle($this->makeRequest($body, $this->sign($body)));
+
+        self::assertNotNull($event);
+        self::assertSame(WebhookEventType::INITIATED, $event->type);
+        self::assertSame('90723141-f547-4ca0-8d34-7452a107f8a1', $event->providerPaymentId);
+        self::assertSame(78.0, $event->amount);
+    }
+
+    /**
+     * Payactive's own docs/portal never confirmed the exact "type"/"status"
+     * strings for a failed CloudEvent webhook; this fixture assumes the same
+     * "payments.payment.<name>" / upper-cased status pattern confirmed for
+     * SETTLED and INITIATED. Re-verify against a real payload once one is observed.
+     */
+    public function testPaymentFailedIsMappedFromCloudEventEnvelope(): void
+    {
+        $body = (string) file_get_contents(self::FIXTURE_DIR.'/payactive-webhook-failed-cloudevent.json');
+
+        $event = (new PayactiveWebhookHandler(self::SECRET))
+            ->handle($this->makeRequest($body, $this->sign($body)));
+
+        self::assertNotNull($event);
+        self::assertSame(WebhookEventType::FAILED, $event->type);
+        self::assertSame('d6d8d863-d46c-4044-9ff3-68cd67142abd', $event->providerPaymentId);
+    }
+
     public function testUnknownEventTypeReturnsNull(): void
     {
         $body = (string) json_encode([
